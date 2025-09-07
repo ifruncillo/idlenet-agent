@@ -1,32 +1,96 @@
 name: release
+
 on:
-  workflow_dispatch:
+  # Run automatically when you push a tag like v0.2.1
   push:
-    tags: ['v*']
+    tags:
+      - 'v*'
+  # Or run manually and optionally target an existing tag (e.g., v0.2.0)
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g., v0.2.0). Leave blank when building a new tag push.'
+        required: false
+        default: ''
+
 permissions:
   contents: write
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: Build ${{ matrix.goos }}-${{ matrix.goarch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x64
+          - runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            outfile: idlenet-linux-amd64
+
+          # Windows x64
+          - runner: windows-latest
+            goos: windows
+            goarch: amd64
+            outfile: idlenet-windows-amd64.exe
+
+          # macOS Apple Silicon (arm64)
+          - runner: macos-latest
+            goos: darwin
+            goarch: arm64
+            outfile: idlenet-darwin-arm64
+
+          # macOS Intel (amd64)
+          - runner: macos-13   # Intel-based mac runner
+            goos: darwin
+            goarch: amd64
+            outfile: idlenet-darwin-amd64
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
-      - name: Build binaries
+          go-version: '1.22.x'
+
+      - name: Build
+        shell: bash
         run: |
-          set -eux
-          mkdir -p dist
-          for pair in "windows/amd64" "linux/amd64" "darwin/amd64" "darwin/arm64"; do
-            GOOS="${pair%/*}"
-            GOARCH="${pair#*/}"
-            OUT="idlenet-${GOOS}-${GOARCH}"
-            if [ "$GOOS" = "windows" ]; then OUT="${OUT}.exe"; fi
-            GOOS=$GOOS GOARCH=$GOARCH CGO_ENABLED=0 go build -o "dist/${OUT}" ./cmd/idlenet
-          done
-          (cd dist && sha256sum * > SHA256SUMS.txt || shasum -a 256 * > SHA256SUMS.txt)
-      - name: Create/Update GitHub Release
+          echo "Building ${{ matrix.goos }}/${{ matrix.goarch }} -> ${{ matrix.outfile }}"
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -trimpath -ldflags "-s -w" -o "${{ matrix.outfile }}" ./cmd/idlenet
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.outfile }}
+          path: ${{ matrix.outfile }}
+
+  release:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Create SHA256SUMS.txt
+        run: |
+          cd dist
+          shasum -a 256 * > SHA256SUMS.txt
+
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          # If manual run with input tag, publish to that. Otherwise use the tag that triggered the workflow.
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: |
+            dist/**
+          draft: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
