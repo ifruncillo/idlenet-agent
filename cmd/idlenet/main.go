@@ -17,7 +17,7 @@ import (
 const version = "0.2.0"
 
 // Default to your Vercel domain. You can override with env IDLENET_API.
-var defaultAPIBase = "https://YOUR-VERCEL-DOMAIN" // <-- put your vercel domain here
+var defaultAPIBase = "https://idlenet-pilot-qi7t.vercel.app/" // <-- put your vercel domain here
 
 type Config struct {
 	Email    string `json:"email"`
