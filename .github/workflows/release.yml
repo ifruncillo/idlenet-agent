@@ -1,99 +1,86 @@
 name: release
 
 on:
-  # Run automatically when you push a tag like v0.2.1
-  push:
-    tags:
-      - 'v*'
-  # Or run manually and optionally target an existing tag (e.g., v0.2.0)
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release (e.g., v0.2.0). Leave blank when building a new tag push.'
-        required: false
-        default: ''
+        description: "Release tag (e.g. v0.2.0)"
+        required: true
+        default: v0.2.0
 
 permissions:
   contents: write
 
 jobs:
   build:
-    name: Build ${{ matrix.goos }}-${{ matrix.goarch }}
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Linux x64
-          - runner: ubuntu-latest
-            goos: linux
+          - goos: windows
+            goarch: amd64
+            outfile: idlenet-windows-amd64.exe
+          - goos: darwin
+            goarch: arm64
+            outfile: idlenet-darwin-arm64
+          - goos: darwin
+            goarch: amd64
+            outfile: idlenet-darwin-amd64
+          - goos: linux
             goarch: amd64
             outfile: idlenet-linux-amd64
 
-          # Windows x64
-          - runner: windows-latest
-            goos: windows
-            goarch: amd64
-            outfile: idlenet-windows-amd64.exe
-
-          # macOS Apple Silicon (arm64)
-          - runner: macos-latest
-            goos: darwin
-            goarch: arm64
-            outfile: idlenet-darwin-arm64
-
-          # macOS Intel (amd64)
-          - runner: macos-13   # Intel-based mac runner
-            goos: darwin
-            goarch: amd64
-            outfile: idlenet-darwin-amd64
-
     steps:
-  - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-  - name: Setup Go
-    uses: actions/setup-go@v5
-    with:
-      go-version: '1.22.x'
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.x'
 
-  - name: Tidy & download deps
-    shell: bash
-    run: |
-      go mod tidy
-      go mod download
+      - name: Tidy & download deps
+        run: |
+          go mod tidy
+          go mod download
 
-  - name: Build
-    shell: bash
-    run: |
-      echo "Building ${{ matrix.goos }}/${{ matrix.goarch }} -> ${{ matrix.outfile }}"
-      CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
-        go build -trimpath -ldflags "-s -w" -o "${{ matrix.outfile }}" ./cmd/idlenet
+      - name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build -trimpath -ldflags "-s -w" -o "${{ matrix.outfile }}" ./cmd/idlenet
+          ls -l
 
-  # (whatever steps you already have after this: upload-artifact, create checksums, release upload, etc.)
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.outfile }}
+          path: ${{ matrix.outfile }}
 
   release:
-    runs-on: ubuntu-latest
     needs: build
+    runs-on: ubuntu-latest
     steps:
-      - name: Download build artifacts
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist
+          merge-multiple: true
 
-      - name: Create SHA256SUMS.txt
+      - name: Create checksums
+        working-directory: dist
         run: |
-          cd dist
-          shasum -a 256 * > SHA256SUMS.txt
+          sha256sum idlenet-* > SHA256SUMS.txt
+          ls -l
 
-      - name: Publish GitHub Release
+      - name: Create/Update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          # If manual run with input tag, publish to that. Otherwise use the tag that triggered the workflow.
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          tag_name: ${{ github.event.inputs.tag }}
           files: |
-            dist/**
+            dist/idlenet-*
+            dist/SHA256SUMS.txt
           draft: false
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
+          prerelease: false
