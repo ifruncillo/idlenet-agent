@@ -1,86 +1,69 @@
-name: release
+name: Build and Release
 
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Release tag (e.g. v0.2.0)"
-        required: true
-        default: v0.2.0
-
-permissions:
-  contents: write
 
 jobs:
   build:
-    runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
       matrix:
         include:
-          - goos: windows
+          - os: windows-latest
+            goos: windows
             goarch: amd64
-            outfile: idlenet-windows-amd64.exe
-          - goos: darwin
+            output: idlenet-windows-amd64.exe
+          - os: macos-latest
+            goos: darwin
             goarch: arm64
-            outfile: idlenet-darwin-arm64
-          - goos: darwin
+            output: idlenet-darwin-arm64
+          - os: macos-latest
+            goos: darwin
             goarch: amd64
-            outfile: idlenet-darwin-amd64
-          - goos: linux
+            output: idlenet-darwin-amd64
+          - os: ubuntu-latest
+            goos: linux
             goarch: amd64
-            outfile: idlenet-linux-amd64
+            output: idlenet-linux-amd64
+
+    runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22.x'
-
-      - name: Tidy & download deps
-        run: |
-          go mod tidy
-          go mod download
-
-      - name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
-        env:
-          CGO_ENABLED: 0
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-        run: |
-          go build -trimpath -ldflags "-s -w" -o "${{ matrix.outfile }}" ./cmd/idlenet
-          ls -l
-
-      - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.outfile }}
-          path: ${{ matrix.outfile }}
+    - uses: actions/checkout@v3
+    
+    - name: Setup Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.22'
+    
+    - name: Build
+      env:
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
+      run: |
+        go build -ldflags "-s -w" -o ${{ matrix.output }} ./cmd/idlenet
+    
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: ${{ matrix.output }}
+        path: ${{ matrix.output }}
 
   release:
     needs: build
     runs-on: ubuntu-latest
+    
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-
-      - name: Create checksums
-        working-directory: dist
-        run: |
-          sha256sum idlenet-* > SHA256SUMS.txt
-          ls -l
-
-      - name: Create/Update GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.inputs.tag }}
-          files: |
-            dist/idlenet-*
-            dist/SHA256SUMS.txt
-          draft: false
-          prerelease: false
+    - name: Download artifacts
+      uses: actions/download-artifact@v3
+      
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          idlenet-windows-amd64.exe/idlenet-windows-amd64.exe
+          idlenet-darwin-arm64/idlenet-darwin-arm64
+          idlenet-darwin-amd64/idlenet-darwin-amd64
+          idlenet-linux-amd64/idlenet-linux-amd64
