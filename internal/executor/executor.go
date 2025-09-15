@@ -12,6 +12,7 @@ import (
     "time"
     
     "github.com/ifruncillo/idlenet-agent/internal/resource"
+    "github.com/ifruncillo/idlenet-agent/internal/wasm"
 )
 
 // JobExecutor handles the execution of computational jobs
@@ -19,6 +20,7 @@ type JobExecutor struct {
     resourceMgr *resource.Manager
     workDir     string
     maxTimeout  time.Duration
+    sandbox     *wasm.Sandbox
 }
 
 // NewExecutor creates a new job executor
@@ -34,10 +36,27 @@ func NewExecutor(resourceMgr *resource.Manager) (*JobExecutor, error) {
         return nil, err
     }
     
+    // Create WASM sandbox with secure configuration
+    sandboxConfig := wasm.DefaultSandboxConfig()
+    // Adjust limits based on resource manager settings
+    cpuLimit, _ := resourceMgr.GetLimits()
+    if cpuLimit < 50 {
+        // Reduce WASM limits for low-resource mode
+        sandboxConfig.MaxExecutionTime = 15 * time.Second
+        sandboxConfig.CPUTimeLimit = 5 * time.Second
+        sandboxConfig.MaxMemoryPages = 32 // 2MB
+    }
+    
+    sandbox, err := wasm.NewSandbox(sandboxConfig)
+    if err != nil {
+        return nil, fmt.Errorf("failed to create WASM sandbox: %w", err)
+    }
+    
     return &JobExecutor{
         resourceMgr: resourceMgr,
         workDir:     workDir,
         maxTimeout:  30 * time.Minute,
+        sandbox:     sandbox,
     }, nil
 }
 
@@ -77,6 +96,21 @@ func (e *JobExecutor) ExecuteJob(ctx context.Context, jobID, artifactURL, expect
         return result, nil
     }
     
+    // Read and verify WASM file
+    wasmBytes, err := os.ReadFile(artifactPath)
+    if err != nil {
+        result.Error = fmt.Sprintf("Failed to read WASM file: %v", err)
+        result.EndTime = time.Now()
+        return result, nil
+    }
+    
+    // Verify WASM format and security
+    if err := e.sandbox.VerifyWASM(wasmBytes); err != nil {
+        result.Error = fmt.Sprintf("WASM verification failed: %v", err)
+        result.EndTime = time.Now()
+        return result, nil
+    }
+    
     // Set timeout for job execution
     timeout := time.Duration(timeoutSeconds) * time.Second
     if timeout > e.maxTimeout {
@@ -90,16 +124,21 @@ func (e *JobExecutor) ExecuteJob(ctx context.Context, jobID, artifactURL, expect
     cpuLimit, memLimit := e.resourceMgr.GetLimits()
     cores := e.resourceMgr.GetCoreCount()
     
-    // TODO: Execute WASM with wasmtime-go
-    // For now, simulate job execution
-    select {
-    case <-jobCtx.Done():
-        result.Error = "Job timed out"
+    // Execute WASM with security sandbox
+    wasmResult, err := e.sandbox.Execute(jobCtx, wasmBytes, "main", []interface{}{})
+    if err != nil {
+        result.Error = fmt.Sprintf("WASM execution setup failed: %v", err)
         result.Success = false
-    case <-time.After(5 * time.Second): // Simulate 5 second job
-        result.Output = fmt.Sprintf("Job completed successfully using %d%% CPU, %d%% memory on %d cores", 
-            cpuLimit, memLimit, cores)
-        result.Success = true
+    } else {
+        result.Success = wasmResult.Success
+        result.CPUTime = wasmResult.CPUTime
+        
+        if wasmResult.Success {
+            result.Output = fmt.Sprintf("WASM job completed successfully. %s. Resource usage: %d%% CPU, %d%% memory on %d cores, Fuel used: %d", 
+                wasmResult.Output, cpuLimit, memLimit, cores, wasmResult.FuelUsed)
+        } else {
+            result.Error = wasmResult.Error
+        }
     }
     
     result.EndTime = time.Now()
@@ -176,5 +215,13 @@ func (e *JobExecutor) CleanupWorkDir() error {
         }
     }
     
+    return nil
+}
+
+// Close cleans up the executor resources
+func (e *JobExecutor) Close() error {
+    if e.sandbox != nil {
+        return e.sandbox.Close()
+    }
     return nil
 }
