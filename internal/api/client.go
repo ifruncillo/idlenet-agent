@@ -146,7 +146,13 @@ type Job struct {
 // GetNextJob asks the server if there's any work available
 // Returns nil if no work is available (this is normal and expected)
 func (c *Client) GetNextJob(ctx context.Context) (*Job, error) {
-    // For now, return nil since job endpoints aren't implemented yet
-    // This is where we'd query /api/agent/jobs/next
-    return nil, nil
+    // Temporary test job for local testing
+    testJob := &Job{
+        ID:         "test-001",
+        Type:       "sleep",
+        Args:       json.RawMessage(`{"seconds": 5}`),
+        MaxSeconds: 30,
+        MemoryMB:   256,
+    }
+    return testJob, nil
 }

@@ -10,7 +10,6 @@ import (
     
     "github.com/ifruncillo/idlenet-agent/internal/api"
     "github.com/ifruncillo/idlenet-agent/internal/config"
-    "github.com/ifruncillo/idlenet-agent/internal/executor"
     "github.com/ifruncillo/idlenet-agent/internal/idle"
     "github.com/ifruncillo/idlenet-agent/internal/metrics"
     "github.com/ifruncillo/idlenet-agent/internal/resource"
@@ -55,7 +54,7 @@ func main() {
     cpuLimit, memLimit := resourceMgr.GetLimits()
     fmt.Printf("Resource limits: CPU=%d%%, Memory=%d%%\n", cpuLimit, memLimit)
     
-    apiClient := api.New(cfg.APIBase, "", cfg.Email, cfg.DeviceID)
+    apiClient := api.NewClient(cfg.APIBase, cfg.Email, cfg.DeviceID)
     
     if !cfg.Registered {
         fmt.Print("Registering with server... ")
@@ -72,11 +71,7 @@ func main() {
         }
     }
     
-    jobExecutor, err := executor.NewExecutor(resourceMgr)
-    if err != nil {
-        fmt.Printf("Failed to create job executor: %v\n", err)
-        os.Exit(1)
-    }
+    // jobExecutor temporarily disabled for testing    }
     
     fmt.Println("========================================")
     
@@ -133,18 +128,18 @@ func main() {
             timestamp := time.Now().Format("15:04:05")
             
             jobCtx, jobCancel := context.WithTimeout(ctx, 5*time.Second)
-            job, err := apiClient.NextJob(jobCtx)
+            job, err := apiClient.GetNextJob(jobCtx)
             jobCancel()
             
             if err != nil {
                 fmt.Printf("[%s] Job check failed: %v\n", timestamp, err)
             } else if job != nil {
-                fmt.Printf("[%s] Got job %s\n", timestamp, job.JobID)
-                metricsTracker.RecordJobStart(job.JobID)
+                fmt.Printf("[%s] Got job %s\n", timestamp, job.ID)
+                metricsTracker.RecordJobStart(job.ID)
                 
                 // Execute job
                 jobMetrics := &metrics.JobMetrics{
-                    JobID:     job.JobID,
+                    JobID:     job.ID,
                     DeviceID:  cfg.DeviceID,
                     StartTime: time.Now(),
                 }
@@ -159,7 +154,7 @@ func main() {
                 metricsTracker.RecordJobComplete(jobMetrics)
                 
                 fmt.Printf("[%s] Job %s completed, earned: $%.4f\n", 
-                    timestamp, job.JobID, jobMetrics.Earnings)
+                    timestamp, job.ID, jobMetrics.Earnings)
             }
             
         case <-statusTicker.C:
