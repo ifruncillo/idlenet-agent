@@ -1,111 +1,91 @@
-package config
+﻿package config
 
 import (
-	"encoding/json"
-	"errors"
-	"os"
-	"path/filepath"
-	"runtime"
-	"time"
-
-	"github.com/google/uuid"
+    "time"
+    "encoding/json"
+    "fmt"
+    "os"
+    "path/filepath"
+    "runtime"
 )
 
 type Config struct {
-	Email      string    `json:"email,omitempty"`
-	Referral   string    `json:"referral,omitempty"`
-	DeviceID   string    `json:"deviceId"`
-	Registered bool      `json:"registered,omitempty"`
-	CreatedAt  time.Time `json:"createdAt"`
-	UpdatedAt  time.Time `json:"updatedAt"`
+    Email      string `json:"email"`
+    Referral   string `json:"referral,omitempty"`
+    DeviceID   string `json:"device_id"`
+    APIBase    string `json:"api_base"`
+    Registered bool   `json:"registered"`
 }
 
-func fileDir() (string, error) {
-	if runtime.GOOS == "windows" {
-		progData := os.Getenv("ProgramData")
-		if progData == "" {
-			return "", errors.New("%ProgramData% not set")
-		}
-		return filepath.Join(progData, "IdleNet"), nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".idlenet"), nil
-}
-
-func FilePath() (string, error) {
-	dir, err := fileDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "config.json"), nil
-}
-
-func ensureDir() (string, error) {
-	dir, err := fileDir()
-	if err != nil {
-		return "", err
-	}
-	// 0700 on unix; Windows ignores perms.
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
-	}
-	return dir, nil
+func configDir() (string, error) {
+    switch runtime.GOOS {
+    case "windows":
+        programData := os.Getenv("ProgramData")
+        if programData == "" {
+            return "", fmt.Errorf("ProgramData not set")
+        }
+        return filepath.Join(programData, "IdleNet"), nil
+    default:
+        home, err := os.UserHomeDir()
+        if err != nil {
+            return "", err
+        }
+        return filepath.Join(home, ".idlenet"), nil
+    }
 }
 
 func Load() (*Config, error) {
-	path, err := FilePath()
-	if err != nil {
-		return nil, err
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			// First-run: create default with new device ID.
-			c := &Config{
-				DeviceID:  uuid.NewString(),
-				CreatedAt: time.Now().UTC(),
-				UpdatedAt: time.Now().UTC(),
-			}
-			if err := Save(c); err != nil {
-				return nil, err
-			}
-			return c, nil
-		}
-		return nil, err
-	}
-	var c Config
-	if err := json.Unmarshal(b, &c); err != nil {
-		return nil, err
-	}
-	// Backfill fields if needed (e.g., DeviceID missing)
-	changed := false
-	if c.DeviceID == "" {
-		c.DeviceID = uuid.NewString()
-		c.CreatedAt = time.Now().UTC()
-		changed = true
-	}
-	if changed {
-		_ = Save(&c)
-	}
-	return &c, nil
+    dir, err := configDir()
+    if err != nil {
+        return nil, err
+    }
+
+    configPath := filepath.Join(dir, "config.json")
+    
+    if err := os.MkdirAll(dir, 0755); err != nil {
+        return nil, err
+    }
+
+    data, err := os.ReadFile(configPath)
+    if err != nil {
+        if os.IsNotExist(err) {
+            cfg := &Config{
+                DeviceID: generateDeviceID(),
+            }
+            return cfg, nil
+        }
+        return nil, err
+    }
+
+    var cfg Config
+    if err := json.Unmarshal(data, &cfg); err != nil {
+        return nil, err
+    }
+
+    if cfg.DeviceID == "" {
+        cfg.DeviceID = generateDeviceID()
+    }
+
+    return &cfg, nil
 }
 
-func Save(c *Config) error {
-	if _, err := ensureDir(); err != nil {
-		return err
-	}
-	path, err := FilePath()
-	if err != nil {
-		return err
-	}
-	c.UpdatedAt = time.Now().UTC()
-	b, err := json.MarshalIndent(c, "", "  ")
-	if err != nil {
-		return err
-	}
-	// 0600 on unix; Windows ignores perms.
-	return os.WriteFile(path, b, 0o600)
+func Save(cfg *Config) error {
+    dir, err := configDir()
+    if err != nil {
+        return err
+    }
+
+    configPath := filepath.Join(dir, "config.json")
+    
+    data, err := json.MarshalIndent(cfg, "", "  ")
+    if err != nil {
+        return err
+    }
+
+    return os.WriteFile(configPath, data, 0644)
+}
+
+func generateDeviceID() string {
+    // Simple ID generation - in production would use UUID
+    return fmt.Sprintf("device-%d", time.Now().UnixNano())
 }
