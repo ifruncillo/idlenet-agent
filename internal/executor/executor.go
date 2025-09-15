@@ -11,6 +11,7 @@ import (
     "path/filepath"
     "time"
     
+    "github.com/bytecodealliance/wasmtime-go/v15"
     "github.com/ifruncillo/idlenet-agent/internal/resource"
 )
 
@@ -19,11 +20,12 @@ type JobExecutor struct {
     resourceMgr *resource.Manager
     workDir     string
     maxTimeout  time.Duration
+    engine      *wasmtime.Engine
+    wasiConfig  *wasmtime.WasiConfig
 }
 
-// NewExecutor creates a new job executor
+// NewExecutor creates a new job executor with WASM support
 func NewExecutor(resourceMgr *resource.Manager) (*JobExecutor, error) {
-    // Create work directory for job execution
     homeDir, err := os.UserHomeDir()
     if err != nil {
         return nil, err
@@ -34,14 +36,109 @@ func NewExecutor(resourceMgr *resource.Manager) (*JobExecutor, error) {
         return nil, err
     }
     
+    // Create WASM engine with resource limits
+    config := wasmtime.NewConfig()
+    config.SetConsumeFuel(true)
+    config.SetEpochInterruption(true)
+    
+    engine := wasmtime.NewEngineWithConfig(config)
+    
     return &JobExecutor{
         resourceMgr: resourceMgr,
         workDir:     workDir,
         maxTimeout:  30 * time.Minute,
+        engine:      engine,
     }, nil
 }
 
-// JobResult contains the outcome of a job execution
+// ExecuteWASM runs a WASM module with sandboxing
+func (e *JobExecutor) ExecuteWASM(ctx context.Context, wasmPath string, args []string) (*JobResult, error) {
+    result := &JobResult{
+        StartTime: time.Now(),
+    }
+    
+    // Read WASM module
+    wasmBytes, err := os.ReadFile(wasmPath)
+    if err != nil {
+        return nil, fmt.Errorf("failed to read WASM: %w", err)
+    }
+    
+    // Create store with fuel limit based on resource manager
+    store := wasmtime.NewStore(e.engine)
+    store.AddFuel(1000000000) // 1 billion units of fuel
+    
+    // Compile module
+    module, err := wasmtime.NewModule(e.engine, wasmBytes)
+    if err != nil {
+        result.Error = fmt.Sprintf("Failed to compile WASM: %v", err)
+        result.EndTime = time.Now()
+        return result, nil
+    }
+    
+    // Setup WASI environment (sandboxed)
+    wasiConfig := wasmtime.NewWasiConfig()
+    wasiConfig.SetArgv(args)
+    wasiConfig.SetStdout(os.Stdout) // In production, capture to file
+    wasiConfig.SetStderr(os.Stderr)
+    
+    // Limit filesystem access to job directory only
+    jobDir := filepath.Dir(wasmPath)
+    wasiConfig.PreopenDir(jobDir, "/")
+    
+    store.SetWasi(wasiConfig)
+    
+    // Create linker and instantiate
+    linker := wasmtime.NewLinker(e.engine)
+    err = linker.DefineWasi()
+    if err != nil {
+        result.Error = fmt.Sprintf("Failed to define WASI: %v", err)
+        result.EndTime = time.Now()
+        return result, nil
+    }
+    
+    instance, err := linker.Instantiate(store, module)
+    if err != nil {
+        result.Error = fmt.Sprintf("Failed to instantiate: %v", err)
+        result.EndTime = time.Now()
+        return result, nil
+    }
+    
+    // Get the _start function (WASI entry point)
+    start := instance.GetFunc(store, "_start")
+    if start == nil {
+        result.Error = "No _start function found"
+        result.EndTime = time.Now()
+        return result, nil
+    }
+    
+    // Execute with timeout
+    done := make(chan error, 1)
+    go func() {
+        _, err := start.Call(store)
+        done <- err
+    }()
+    
+    select {
+    case err := <-done:
+        if err != nil {
+            result.Error = fmt.Sprintf("Execution error: %v", err)
+            result.Success = false
+        } else {
+            result.Success = true
+            result.Output = "WASM execution completed successfully"
+        }
+    case <-ctx.Done():
+        result.Error = "Execution timeout"
+        result.Success = false
+    }
+    
+    result.EndTime = time.Now()
+    result.CPUTime = result.EndTime.Sub(result.StartTime)
+    
+    return result, nil
+}
+
+// JobResult remains the same
 type JobResult struct {
     Success   bool
     Output    string
@@ -51,33 +148,29 @@ type JobResult struct {
     CPUTime   time.Duration
 }
 
-// ExecuteJob downloads and runs a computational job
+// ExecuteJob orchestrates the full job execution
 func (e *JobExecutor) ExecuteJob(ctx context.Context, jobID, artifactURL, expectedSHA256 string, timeoutSeconds int) (*JobResult, error) {
-    result := &JobResult{
-        StartTime: time.Now(),
-    }
-    
-    // Check if we should run jobs based on current system activity
     if !e.resourceMgr.ShouldRunJob() {
         return nil, fmt.Errorf("system too active to run jobs")
     }
     
-    // Create job-specific directory
     jobDir := filepath.Join(e.workDir, jobID)
     if err := os.MkdirAll(jobDir, 0755); err != nil {
         return nil, fmt.Errorf("failed to create job directory: %w", err)
     }
-    defer os.RemoveAll(jobDir) // Clean up after job completes
+    defer os.RemoveAll(jobDir)
     
-    // Download artifact
     artifactPath := filepath.Join(jobDir, "job.wasm")
     if err := e.downloadAndVerify(artifactURL, artifactPath, expectedSHA256); err != nil {
-        result.Error = fmt.Sprintf("Failed to download artifact: %v", err)
-        result.EndTime = time.Now()
+        result := &JobResult{
+            StartTime: time.Now(),
+            EndTime:   time.Now(),
+            Error:     fmt.Sprintf("Failed to download artifact: %v", err),
+            Success:   false,
+        }
         return result, nil
     }
     
-    // Set timeout for job execution
     timeout := time.Duration(timeoutSeconds) * time.Second
     if timeout > e.maxTimeout {
         timeout = e.maxTimeout
@@ -86,31 +179,11 @@ func (e *JobExecutor) ExecuteJob(ctx context.Context, jobID, artifactURL, expect
     jobCtx, cancel := context.WithTimeout(ctx, timeout)
     defer cancel()
     
-    // Get resource limits
-    cpuLimit, memLimit := e.resourceMgr.GetLimits()
-    cores := e.resourceMgr.GetCoreCount()
-    
-    // TODO: Execute WASM with wasmtime-go
-    // For now, simulate job execution
-    select {
-    case <-jobCtx.Done():
-        result.Error = "Job timed out"
-        result.Success = false
-    case <-time.After(5 * time.Second): // Simulate 5 second job
-        result.Output = fmt.Sprintf("Job completed successfully using %d%% CPU, %d%% memory on %d cores", 
-            cpuLimit, memLimit, cores)
-        result.Success = true
-    }
-    
-    result.EndTime = time.Now()
-    result.CPUTime = result.EndTime.Sub(result.StartTime)
-    
-    return result, nil
+    return e.ExecuteWASM(jobCtx, artifactPath, []string{})
 }
 
-// downloadAndVerify downloads a file and verifies its SHA256 checksum
+// downloadAndVerify remains the same
 func (e *JobExecutor) downloadAndVerify(url, destPath, expectedSHA256 string) error {
-    // Download file
     resp, err := http.Get(url)
     if err != nil {
         return fmt.Errorf("download failed: %w", err)
@@ -121,7 +194,6 @@ func (e *JobExecutor) downloadAndVerify(url, destPath, expectedSHA256 string) er
         return fmt.Errorf("download failed with status: %d", resp.StatusCode)
     }
     
-    // Create temporary file
     tempPath := destPath + ".tmp"
     tempFile, err := os.Create(tempPath)
     if err != nil {
@@ -129,7 +201,6 @@ func (e *JobExecutor) downloadAndVerify(url, destPath, expectedSHA256 string) er
     }
     defer os.Remove(tempPath)
     
-    // Calculate SHA256 while downloading
     hasher := sha256.New()
     writer := io.MultiWriter(tempFile, hasher)
     
@@ -139,13 +210,11 @@ func (e *JobExecutor) downloadAndVerify(url, destPath, expectedSHA256 string) er
     }
     tempFile.Close()
     
-    // Verify checksum
     actualSHA256 := hex.EncodeToString(hasher.Sum(nil))
     if actualSHA256 != expectedSHA256 {
         return fmt.Errorf("checksum mismatch: expected %s, got %s", expectedSHA256, actualSHA256)
     }
     
-    // Move to final location
     if err := os.Rename(tempPath, destPath); err != nil {
         return fmt.Errorf("failed to move file: %w", err)
     }
@@ -153,7 +222,6 @@ func (e *JobExecutor) downloadAndVerify(url, destPath, expectedSHA256 string) er
     return nil
 }
 
-// CleanupWorkDir removes old job directories
 func (e *JobExecutor) CleanupWorkDir() error {
     entries, err := os.ReadDir(e.workDir)
     if err != nil {
@@ -169,7 +237,6 @@ func (e *JobExecutor) CleanupWorkDir() error {
                 continue
             }
             
-            // Remove directories older than 24 hours
             if now.Sub(info.ModTime()) > 24*time.Hour {
                 os.RemoveAll(path)
             }

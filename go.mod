@@ -3,6 +3,7 @@ module github.com/ifruncillo/idlenet-agent
 go 1.22
 
 require (
+	github.com/bytecodealliance/wasmtime-go/v15 v15.0.0 // indirect
 	github.com/getlantern/context v0.0.0-20190109183933-c447772a6520 // indirect
 	github.com/getlantern/errors v0.0.0-20190325191628-abdb3e3e36f7 // indirect
 	github.com/getlantern/golog v0.0.0-20190830074920-4ef2e798c2d7 // indirect

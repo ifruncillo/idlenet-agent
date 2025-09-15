@@ -1,3 +1,5 @@
+github.com/bytecodealliance/wasmtime-go/v15 v15.0.0 h1:4R2MpSPPbtSxqdsOTvsMn1pnwdEhzbDGMao6LUUSLv4=
+github.com/bytecodealliance/wasmtime-go/v15 v15.0.0/go.mod h1:m6vB/SsM+pnJkVHmO1wzHYUeYtciltTKuxuvkR8pYcY=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/getlantern/context v0.0.0-20190109183933-c447772a6520 h1:NRUJuo3v3WGC/g5YiyF790gut6oQr5f3FBI88Wv0dx4=
 github.com/getlantern/context v0.0.0-20190109183933-c447772a6520/go.mod h1:L+mq6/vvYHKjCX2oez0CgEAJmbq1fbb/oNJIWQkBybY=
