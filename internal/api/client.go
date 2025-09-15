@@ -1,105 +1,152 @@
 package api
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
-	"fmt"
-	"net/http"
-	"time"
+    "bytes"
+    "context"
+    "encoding/json"
+    "fmt"
+    "io"
+    "net/http"
+    "net/url"
+    "time"
 )
 
+// Client handles all communication with the IdleNet API
 type Client struct {
-	BaseURL string
-	Bypass  string // optional vercel bypass token
-	h       *http.Client
-	Email   string
-	DeviceID string
+    baseURL    string
+    httpClient *http.Client
+    email      string
+    deviceID   string
+    bypass     string  // Optional Vercel bypass token for protected deployments
 }
 
-func New(baseURL, bypass, email, deviceID string) *Client {
-	return &Client{
-		BaseURL: baseURL,
-		Bypass:  bypass,
-		Email:   email,
-		DeviceID: deviceID,
-		h: &http.Client{Timeout: 15 * time.Second},
-	}
+// NewClient creates a new API client with the given configuration
+func NewClient(baseURL, email, deviceID string) *Client {
+    return &Client{
+        baseURL:  baseURL,
+        email:    email,
+        deviceID: deviceID,
+        httpClient: &http.Client{
+            Timeout: 30 * time.Second,  // Don't wait forever for responses
+        },
+    }
 }
 
-func (c *Client) url(p string) string {
-	u := c.BaseURL + p
-	if c.Bypass != "" {
-		sep := "?"
-		if bytes.Contains([]byte(u), []byte("?")) { sep = "&" }
-		u = fmt.Sprintf("%s%sx-vercel-set-bypass-cookie=true&x-vercel-protection-bypass=%s", u, sep, c.Bypass)
-	}
-	return u
+// SetBypassToken sets the Vercel bypass token if the deployment is protected
+func (c *Client) SetBypassToken(token string) {
+    c.bypass = token
 }
 
+// Register tells the server about this agent for the first time
+// Think of this as introducing yourself at a new job
 func (c *Client) Register(ctx context.Context, referral, version string) error {
-	body := map[string]any{
-		"email":    c.Email,
-		"deviceId": c.DeviceID,
-		"referral": referral,
-		"version":  version,
-	}
-	b, _ := json.Marshal(body)
-	req, _ := http.NewRequestWithContext(ctx, "POST", c.url("/api/agent/register"), bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.h.Do(req)
-	if err != nil { return err }
-	defer resp.Body.Close()
-	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("register: status %d", resp.StatusCode)
-	}
-	return nil
+    payload := map[string]interface{}{
+        "email":    c.email,
+        "deviceId": c.deviceID,
+        "referral": referral,
+        "version":  version,
+    }
+    
+    response, err := c.doRequest(ctx, "POST", "/api/agent/register", payload)
+    if err != nil {
+        return fmt.Errorf("registration failed: %w", err)
+    }
+    defer response.Body.Close()
+    
+    if response.StatusCode != http.StatusOK {
+        body, _ := io.ReadAll(response.Body)
+        return fmt.Errorf("registration rejected: %s (status %d)", string(body), response.StatusCode)
+    }
+    
+    return nil
 }
 
+// Beat sends a heartbeat to let the server know we're still alive
+// Like a lighthouse flashing to say "all is well"
 func (c *Client) Beat(ctx context.Context) error {
-	body := map[string]any{ "email": c.Email, "deviceId": c.DeviceID }
-	b, _ := json.Marshal(body)
-	req, _ := http.NewRequestWithContext(ctx, "POST", c.url("/api/agent/beat"), bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.h.Do(req)
-	if err != nil { return err }
-	defer resp.Body.Close()
-	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("beat: status %d", resp.StatusCode)
-	}
-	return nil
+    payload := map[string]interface{}{
+        "email":    c.email,
+        "deviceId": c.deviceID,
+    }
+    
+    response, err := c.doRequest(ctx, "POST", "/api/agent/beat", payload)
+    if err != nil {
+        return fmt.Errorf("heartbeat failed: %w", err)
+    }
+    defer response.Body.Close()
+    
+    if response.StatusCode != http.StatusOK {
+        body, _ := io.ReadAll(response.Body)
+        return fmt.Errorf("heartbeat rejected: %s (status %d)", string(body), response.StatusCode)
+    }
+    
+    return nil
 }
 
-type NextJobResp struct {
-	JobID      string          `json:"jobId"`
-	Type       string          `json:"type"`
-	Args       json.RawMessage `json:"args"`
-	TimeoutSec int             `json:"timeoutSec"`
+// doRequest is the internal workhorse that actually sends HTTP requests
+// It handles all the details like headers, bypass tokens, and JSON encoding
+func (c *Client) doRequest(ctx context.Context, method, path string, payload interface{}) (*http.Response, error) {
+    // Build the full URL
+    fullURL := c.baseURL + path
+    
+    // Add bypass parameters if we have a token (for protected Vercel deployments)
+    if c.bypass != "" {
+        parsed, err := url.Parse(fullURL)
+        if err != nil {
+            return nil, fmt.Errorf("invalid URL: %w", err)
+        }
+        
+        query := parsed.Query()
+        query.Set("x-vercel-set-bypass-cookie", "true")
+        query.Set("x-vercel-protection-bypass", c.bypass)
+        parsed.RawQuery = query.Encode()
+        fullURL = parsed.String()
+    }
+    
+    // Convert the payload to JSON
+    var body io.Reader
+    if payload != nil {
+        jsonData, err := json.Marshal(payload)
+        if err != nil {
+            return nil, fmt.Errorf("failed to encode payload: %w", err)
+        }
+        body = bytes.NewReader(jsonData)
+    }
+    
+    // Create the HTTP request
+    request, err := http.NewRequestWithContext(ctx, method, fullURL, body)
+    if err != nil {
+        return nil, fmt.Errorf("failed to create request: %w", err)
+    }
+    
+    // Set headers
+    request.Header.Set("Content-Type", "application/json")
+    request.Header.Set("User-Agent", "IdleNet-Agent/1.0")
+    
+    // Add bypass header if we have a token
+    if c.bypass != "" {
+        request.Header.Set("x-vercel-protection-bypass", c.bypass)
+    }
+    
+    // Send the request
+    return c.httpClient.Do(request)
 }
 
-func (c *Client) NextJob(ctx context.Context) (*NextJobResp, error) {
-	req, _ := http.NewRequestWithContext(ctx, "GET",
-		c.url(fmt.Sprintf("/api/agent/jobs/next?email=%s&deviceId=%s", c.Email, c.DeviceID)), nil)
-	resp, err := c.h.Do(req)
-	if err != nil { return nil, err }
-	defer resp.Body.Close()
-	if resp.StatusCode == 204 { return nil, nil }
-	if resp.StatusCode/100 != 2 { return nil, fmt.Errorf("next job: %d", resp.StatusCode) }
-	var out NextJobResp
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil { return nil, err }
-	return &out, nil
+// Job represents a unit of work from the server
+type Job struct {
+    ID          string            `json:"id"`
+    Type        string            `json:"type"`
+    ArtifactURL string            `json:"artifact_url,omitempty"`
+    SHA256      string            `json:"sha256,omitempty"`
+    Args        json.RawMessage   `json:"args,omitempty"`
+    MaxSeconds  int               `json:"max_seconds"`
+    MemoryMB    int               `json:"mem_mb"`
 }
 
-func (c *Client) Report(ctx context.Context, jobID, status string, dur time.Duration, errMsg string) error {
-	body := map[string]any{
-		"jobId": jobID, "status": status, "durationMs": dur.Milliseconds(), "error": errMsg,
-	}
-	b, _ := json.Marshal(body)
-	req, _ := http.NewRequestWithContext(ctx, "POST", c.url("/api/agent/jobs/report"), bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.h.Do(req)
-	if err != nil { return err }
-	defer resp.Body.Close()
-	if resp.StatusCode/100 != 2 { return fmt.Errorf("report: %d", resp.StatusCode) }
-	return nil
+// GetNextJob asks the server if there's any work available
+// Returns nil if no work is available (this is normal and expected)
+func (c *Client) GetNextJob(ctx context.Context) (*Job, error) {
+    // For now, return nil since job endpoints aren't implemented yet
+    // This is where we'd query /api/agent/jobs/next
+    return nil, nil
 }
