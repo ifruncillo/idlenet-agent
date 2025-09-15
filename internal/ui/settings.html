@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>IdleNet Agent Settings</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            width: 100%;
+            max-width: 500px;
+            padding: 40px;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        .form-group {
+            margin-bottom: 25px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+            font-weight: 500;
+        }
+        select, input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+        select:focus, input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+        }
+        input[type="checkbox"] {
+            width: auto;
+            margin-right: 10px;
+        }
+        .info {
+            background: #f5f5ff;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 14px;
+            color: #666;
+        }
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 14px 30px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            width: 100%;
+            transition: transform 0.2s;
+        }
+        button:hover {
+            transform: translateY(-2px);
+        }
+        .status {
+            margin-top: 20px;
+            padding: 12px;
+            border-radius: 8px;
+            text-align: center;
+            display: none;
+        }
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            display: block;
+        }
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>IdleNet Agent Settings</h1>
+        <p class="subtitle">Configure how your computer contributes to the network</p>
+        
+        <div class="info">
+            Your computer is earning money by processing tasks when idle. Adjust these settings to control resource usage and earnings.
+        </div>
+        
+        <div class="form-group">
+            <label for="resourceMode">Resource Mode</label>
+            <select id="resourceMode">
+                <option value="aggressive">Aggressive - Maximum earnings, higher resource use</option>
+                <option value="balanced">Balanced - Moderate earnings and resource use</option>
+                <option value="conservative">Conservative - Low impact on your system</option>
+                <option value="idle-only">Idle Only - Only run when completely idle</option>
+            </select>
+        </div>
+        
+        <div class="form-group">
+            <div class="checkbox-group">
+                <input type="checkbox" id="allowBackground">
+                <label for="allowBackground">Allow background processing while using computer</label>
+            </div>
+        </div>
+        
+        <div class="form-group">
+            <label for="maxCPU">Maximum CPU Usage (%)</label>
+            <input type="number" id="maxCPU" min="5" max="90" value="50">
+        </div>
+        
+        <div class="form-group">
+            <label for="maxMemory">Maximum Memory (MB)</label>
+            <input type="number" id="maxMemory" min="256" max="8192" value="2048">
+        </div>
+        
+        <button onclick="saveSettings()">Save Settings</button>
+        
+        <div id="status" class="status"></div>
+    </div>
+    
+    <script>
+        // Load current settings
+        fetch('/api/config')
+            .then(r => r.json())
+            .then(config => {
+                document.getElementById('resourceMode').value = config.resource_mode || 'balanced';
+                document.getElementById('allowBackground').checked = config.allow_background || false;
+                document.getElementById('maxCPU').value = config.max_cpu_percent || 50;
+                document.getElementById('maxMemory').value = config.max_memory_mb || 2048;
+            });
+        
+        function saveSettings() {
+            const settings = {
+                resource_mode: document.getElementById('resourceMode').value,
+                allow_background: document.getElementById('allowBackground').checked,
+                max_cpu_percent: parseInt(document.getElementById('maxCPU').value),
+                max_memory_mb: parseInt(document.getElementById('maxMemory').value)
+            };
+            
+            fetch('/api/save', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(settings)
+            })
+            .then(r => r.json())
+            .then(result => {
+                const status = document.getElementById('status');
+                if (result.success) {
+                    status.className = 'status success';
+                    status.textContent = 'Settings saved successfully!';
+                } else {
+                    status.className = 'status error';
+                    status.textContent = 'Failed to save settings';
+                }
+                setTimeout(() => status.style.display = 'none', 3000);
+            });
+        }
+    </script>
+</body>
+</html>
