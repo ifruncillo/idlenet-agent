@@ -3,16 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"time"
+	"github.com/ifruncillo/idlenet-agent/internal/config"
 )
 
 var (
@@ -25,21 +23,13 @@ var (
 	defaultAPIBase = "https://idlenet-pilot-qi7t.vercel.app"
 )
 
-type Config struct {
-	Email    string `json:"email"`
-	Referral string `json:"referral,omitempty"`
-	DeviceID string `json:"device_id"`
-}
-
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
 	// Load or create config (email/referral/device_id).
-	cfg, _ := loadConfig()
-	if cfg.DeviceID == "" {
-		cfg.DeviceID = genDeviceID()
-	}
+	cfg, _ := config.Load()
+	
 	// Email from env or prompt once.
 	if cfg.Email == "" {
 		if v := os.Getenv("IDLENET_EMAIL"); v != "" {
@@ -55,7 +45,7 @@ func main() {
 			cfg.Referral = v
 		}
 	}
-	_ = saveConfig(cfg)
+	_ = config.Save(cfg)
 
 	// API base + optional Vercel bypass token
 	apiBase := envOr("IDLENET_API_BASE", defaultAPIBase)
@@ -101,7 +91,13 @@ func main() {
 
 			// Run the job with a timeout
 			start := time.Now()
-			status, errMsg := runJob(ctx, job)
+			// Convert nextJobResp to job struct
+			status, errMsg := runJob(ctx, &nextJobResp{
+				JobID:      job.JobID,
+				Type:       job.Type,
+				Args:       job.Args,
+				TimeoutSec: job.TimeoutSec,
+			})
 			dur := time.Since(start)
 
 			if err := apiReport(ctx, apiBase, bypass, job.JobID, status, dur, errMsg); err != nil {
@@ -111,51 +107,6 @@ func main() {
 			}
 		}
 	}
-}
-
-/* ----------------- Config helpers ----------------- */
-
-func configPath() (string, error) {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	root := filepath.Join(dir, "idlenet")
-	_ = os.MkdirAll(root, 0o755)
-	return filepath.Join(root, "config.json"), nil
-}
-
-func loadConfig() (*Config, error) {
-	p, err := configPath()
-	if err != nil {
-		return &Config{}, err
-	}
-	b, err := os.ReadFile(p)
-	if err != nil {
-		return &Config{}, nil // first run
-	}
-	var c Config
-	if e := json.Unmarshal(b, &c); e != nil {
-		return &Config{}, e
-	}
-	return &c, nil
-}
-
-func saveConfig(c *Config) error {
-	p, err := configPath()
-	if err != nil {
-		return err
-	}
-	b, _ := json.MarshalIndent(c, "", "  ")
-	return os.WriteFile(p, b, 0o644)
-}
-
-func genDeviceID() string {
-	var buf [16]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		return fmt.Sprintf("dev-%d", time.Now().UnixNano())
-	}
-	return "dev-" + hex.EncodeToString(buf[:])
 }
 
 /* ----------------- API client ----------------- */
@@ -279,14 +230,7 @@ func apiReport(ctx context.Context, base, bypass, jobID, status string, dur time
 
 /* ----------------- Job runner (safe canaries) ----------------- */
 
-type job struct {
-	JobID      string
-	Type       string
-	Args       json.RawMessage
-	TimeoutSec int
-}
-
-func runJob(parent context.Context, j *job) (status string, errMsg string) {
+func runJob(parent context.Context, j *nextJobResp) (status string, errMsg string) {
 	// time box the job
 	dl := time.Duration(j.TimeoutSec) * time.Second
 	if dl <= 0 {

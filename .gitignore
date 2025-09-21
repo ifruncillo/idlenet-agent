@@ -1,0 +1,36 @@
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+idlenet
+idlenet-*
+
+# Test binary
+*.test
+
+# Output
+*.out
+dist/
+build/
+
+# Go workspace
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Config (local only)
+.env
