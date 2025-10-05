@@ -1,9 +1,8 @@
 package api
+
 import (
     "bytes"
     "context"
-    "crypto/sha256"
-    "encoding/hex"
     "encoding/json"
     "fmt"
     "io"
@@ -11,6 +10,7 @@ import (
     "net/url"
     "time"
 )
+
 // Client handles all communication with the IdleNet API
 type Client struct {
     baseURL    string
@@ -146,66 +146,13 @@ type Job struct {
 // GetNextJob asks the server if there's any work available
 // Returns nil if no work is available (this is normal and expected)
 func (c *Client) GetNextJob(ctx context.Context) (*Job, error) {
-    url := fmt.Sprintf("/api/agent/jobs/next?email=%s&deviceId=%s", c.email, c.deviceID)
-    resp, err := c.doRequest(ctx, "GET", url, nil)
-    if err != nil {
-        return nil, err
+    // Temporary test job for local testing
+    testJob := &Job{
+        ID:         "test-001",
+        Type:       "sleep",
+        Args:       json.RawMessage(`{"seconds": 5}`),
+        MaxSeconds: 30,
+        MemoryMB:   256,
     }
-    defer resp.Body.Close()
-    
-    if resp.StatusCode == http.StatusNoContent {
-        return nil, nil // No jobs available
-    }
-    
-    if resp.StatusCode != http.StatusOK {
-        return nil, fmt.Errorf("unexpected status: %d", resp.StatusCode)
-    }
-    
-    var job Job
-    if err := json.NewDecoder(resp.Body).Decode(&job); err != nil {
-        return nil, err
-    }
-    return &job, nil
+    return testJob, nil
 }
-
-// DownloadArtifact downloads and verifies job file
-func (c *Client) DownloadArtifact(ctx context.Context, url, expectedSHA256 string) ([]byte, error) {
-    resp, err := http.Get(url)
-    if err != nil {
-        return nil, err
-    }
-    defer resp.Body.Close()
-    
-    data, err := io.ReadAll(resp.Body)
-    if err != nil {
-        return nil, err
-    }
-    
-    hash := sha256.Sum256(data)
-    if hex.EncodeToString(hash[:]) != expectedSHA256 {
-        return nil, fmt.Errorf("SHA256 mismatch")
-    }
-    
-    return data, nil
-}
-
-// ReportJobComplete reports job completion
-func (c *Client) ReportJobComplete(ctx context.Context, jobID, status string, result map[string]interface{}, execTimeMs int64) error {
-    body := map[string]interface{}{
-        "jobId": jobID,
-        "status": status,
-        "result": result,
-        "executionTime": execTimeMs,
-    }
-    jsonBody, _ := json.Marshal(body)
-    resp, err := c.doRequest(ctx, "POST", "/api/jobs/complete", bytes.NewReader(jsonBody))
-    if err != nil {
-        return err
-    }
-    defer resp.Body.Close()
-    return nil
-}
-
-
-
-
