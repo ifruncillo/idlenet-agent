@@ -1,0 +1,17 @@
+IMPORTANT: Windows Security Warning
+====================================
+
+When you run idlenet-windows-amd64.exe, Windows will show:
+"Windows protected your PC - Microsoft Defender SmartScreen prevented an unrecognized app from starting"
+
+This is normal for beta software. To run:
+1. Click "More info"
+2. Click "Run anyway"
+
+This warning appears because the software isn't digitally signed yet.
+The agent is safe and only uses your idle CPU for distributed computing.
+
+After running, the agent will:
+- Use about 10% CPU when you're active
+- Use up to 70% CPU when your computer is idle
+- Automatically reduce usage when you need your computer

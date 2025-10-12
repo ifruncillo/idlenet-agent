@@ -3,11 +3,16 @@ package api
 import (
     "bytes"
     "context"
+    "crypto/sha256"
+    "encoding/hex"
     "encoding/json"
     "fmt"
     "io"
+    "mime/multipart"
     "net/http"
     "net/url"
+    "os"
+    "path/filepath"
     "time"
 )
 
@@ -146,13 +151,122 @@ type Job struct {
 // GetNextJob asks the server if there's any work available
 // Returns nil if no work is available (this is normal and expected)
 func (c *Client) GetNextJob(ctx context.Context) (*Job, error) {
-    // Temporary test job for local testing
-    testJob := &Job{
-        ID:         "test-001",
-        Type:       "sleep",
-        Args:       json.RawMessage(`{"seconds": 5}`),
-        MaxSeconds: 30,
-        MemoryMB:   256,
+    url := fmt.Sprintf("/api/agent/jobs/next?email=%s&deviceId=%s", c.email, c.deviceID)
+    resp, err := c.doRequest(ctx, "GET", url, nil)
+    if err != nil {
+        return nil, err
     }
-    return testJob, nil
+    defer resp.Body.Close()
+    
+    if resp.StatusCode == http.StatusNoContent {
+        return nil, nil // No jobs available
+    }
+    
+    if resp.StatusCode != http.StatusOK {
+        return nil, fmt.Errorf("unexpected status: %d", resp.StatusCode)
+    }
+    
+    var job Job
+    if err := json.NewDecoder(resp.Body).Decode(&job); err != nil {
+        return nil, err
+    }
+    return &job, nil
+}
+
+// DownloadArtifact downloads and verifies job file
+func (c *Client) DownloadArtifact(ctx context.Context, url, expectedSHA256 string) ([]byte, error) {
+    resp, err := http.Get(url)
+    if err != nil {
+        return nil, err
+    }
+    defer resp.Body.Close()
+    
+    data, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return nil, err
+    }
+    
+    hash := sha256.Sum256(data)
+    if hex.EncodeToString(hash[:]) != expectedSHA256 {
+        return nil, fmt.Errorf("SHA256 mismatch")
+    }
+    
+    return data, nil
+}
+
+// ReportJobComplete reports job completion
+func (c *Client) ReportJobComplete(ctx context.Context, jobID, status string, result map[string]interface{}, execTimeMs int64) error {
+    body := map[string]interface{}{
+        "jobId": jobID,
+        "status": status,
+        "result": result,
+        "executionTime": execTimeMs,
+    }
+    jsonBody, _ := json.Marshal(body)
+    resp, err := c.doRequest(ctx, "POST", "/api/jobs/complete", bytes.NewReader(jsonBody))
+    if err != nil {
+        return err
+    }
+    defer resp.Body.Close()
+    return nil
+}
+
+// UploadJobResult uploads a result file to the server after job completion
+// This lets companies download the processed files they requested
+func (c *Client) UploadJobResult(ctx context.Context, jobID, filePath string) error {
+    file, err := os.Open(filePath)
+    if err != nil {
+        return fmt.Errorf("failed to open result file: %w", err)
+    }
+    defer file.Close()
+
+    // Create multipart form for file upload
+    body := &bytes.Buffer{}
+    writer := multipart.NewWriter(body)
+    
+    part, err := writer.CreateFormFile("file", filepath.Base(filePath))
+    if err != nil {
+        return fmt.Errorf("failed to create form file: %w", err)
+    }
+    
+    if _, err := io.Copy(part, file); err != nil {
+        return fmt.Errorf("failed to copy file: %w", err)
+    }
+    
+    writer.WriteField("jobId", jobID)
+    writer.Close()
+
+    // Build URL with bypass token if available
+    uploadURL := c.baseURL + "/api/jobs/upload-result"
+    if c.bypass != "" {
+        parsed, _ := url.Parse(uploadURL)
+        query := parsed.Query()
+        query.Set("x-vercel-set-bypass-cookie", "true")
+        query.Set("x-vercel-protection-bypass", c.bypass)
+        parsed.RawQuery = query.Encode()
+        uploadURL = parsed.String()
+    }
+
+    req, err := http.NewRequestWithContext(ctx, "POST", uploadURL, body)
+    if err != nil {
+        return fmt.Errorf("failed to create upload request: %w", err)
+    }
+    
+    req.Header.Set("Content-Type", writer.FormDataContentType())
+    if c.bypass != "" {
+        req.Header.Set("x-vercel-protection-bypass", c.bypass)
+    }
+
+    resp, err := c.httpClient.Do(req)
+    if err != nil {
+        return fmt.Errorf("upload failed: %w", err)
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode != http.StatusOK {
+        bodyBytes, _ := io.ReadAll(resp.Body)
+        return fmt.Errorf("upload rejected: %s (status %d)", string(bodyBytes), resp.StatusCode)
+    }
+
+    return nil
 }
