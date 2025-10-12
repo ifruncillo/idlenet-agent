@@ -1,4 +1,5 @@
 package api
+
 import (
     "bytes"
     "context"
@@ -7,10 +8,14 @@ import (
     "encoding/json"
     "fmt"
     "io"
+    "mime/multipart"
     "net/http"
     "net/url"
+    "os"
+    "path/filepath"
     "time"
 )
+
 // Client handles all communication with the IdleNet API
 type Client struct {
     baseURL    string
@@ -206,6 +211,62 @@ func (c *Client) ReportJobComplete(ctx context.Context, jobID, status string, re
     return nil
 }
 
+// UploadJobResult uploads a result file to the server after job completion
+// This lets companies download the processed files they requested
+func (c *Client) UploadJobResult(ctx context.Context, jobID, filePath string) error {
+    file, err := os.Open(filePath)
+    if err != nil {
+        return fmt.Errorf("failed to open result file: %w", err)
+    }
+    defer file.Close()
 
+    // Create multipart form for file upload
+    body := &bytes.Buffer{}
+    writer := multipart.NewWriter(body)
+    
+    part, err := writer.CreateFormFile("file", filepath.Base(filePath))
+    if err != nil {
+        return fmt.Errorf("failed to create form file: %w", err)
+    }
+    
+    if _, err := io.Copy(part, file); err != nil {
+        return fmt.Errorf("failed to copy file: %w", err)
+    }
+    
+    writer.WriteField("jobId", jobID)
+    writer.Close()
 
+    // Build URL with bypass token if available
+    uploadURL := c.baseURL + "/api/jobs/upload-result"
+    if c.bypass != "" {
+        parsed, _ := url.Parse(uploadURL)
+        query := parsed.Query()
+        query.Set("x-vercel-set-bypass-cookie", "true")
+        query.Set("x-vercel-protection-bypass", c.bypass)
+        parsed.RawQuery = query.Encode()
+        uploadURL = parsed.String()
+    }
 
+    req, err := http.NewRequestWithContext(ctx, "POST", uploadURL, body)
+    if err != nil {
+        return fmt.Errorf("failed to create upload request: %w", err)
+    }
+    
+    req.Header.Set("Content-Type", writer.FormDataContentType())
+    if c.bypass != "" {
+        req.Header.Set("x-vercel-protection-bypass", c.bypass)
+    }
+
+    resp, err := c.httpClient.Do(req)
+    if err != nil {
+        return fmt.Errorf("upload failed: %w", err)
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode != http.StatusOK {
+        bodyBytes, _ := io.ReadAll(resp.Body)
+        return fmt.Errorf("upload rejected: %s (status %d)", string(bodyBytes), resp.StatusCode)
+    }
+
+    return nil
+}
