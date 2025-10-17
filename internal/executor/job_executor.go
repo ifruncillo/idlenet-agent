@@ -20,7 +20,7 @@ func ExecuteJob(ctx context.Context, jobType string, artifactData []byte, args j
     result := make(map[string]interface{})
     
     switch jobType {
-    case "javascript", "js":
+    case "javascript", "js", "compute":
         // For JavaScript, save to temp file and run with Node.js
         tempFile := filepath.Join(os.TempDir(), fmt.Sprintf("job_%d.js", time.Now().Unix()))
         if err := os.WriteFile(tempFile, artifactData, 0644); err != nil {

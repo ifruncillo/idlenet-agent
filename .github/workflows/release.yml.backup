@@ -1,0 +1,69 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            output: idlenet-windows-amd64.exe
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            output: idlenet-darwin-arm64
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            output: idlenet-darwin-amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            output: idlenet-linux-amd64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.22'
+    
+    - name: Build
+      env:
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
+      run: |
+        go build -ldflags "-s -w" -o ${{ matrix.output }} ./cmd/idlenet
+    
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.output }}
+        path: ${{ matrix.output }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+      
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          idlenet-windows-amd64.exe/idlenet-windows-amd64.exe
+          idlenet-darwin-arm64/idlenet-darwin-arm64
+          idlenet-darwin-amd64/idlenet-darwin-amd64
+          idlenet-linux-amd64/idlenet-linux-amd64

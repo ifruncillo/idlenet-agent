@@ -13,6 +13,7 @@ import (
     "github.com/ifruncillo/idlenet-agent/internal/idle"
     "github.com/ifruncillo/idlenet-agent/internal/metrics"
     "github.com/ifruncillo/idlenet-agent/internal/resource"
+    "github.com/ifruncillo/idlenet-agent/internal/worker"
 )
 
 const version = "v1.0.0"
@@ -71,7 +72,8 @@ func main() {
         }
     }
     
-    // jobExecutor temporarily disabled for testing    }
+    // Initialize worker for real job execution
+    jobWorker := worker.New(apiClient, cfg.Email, cfg.DeviceID)
     
     fmt.Println("========================================")
     
@@ -125,37 +127,9 @@ func main() {
                 continue
             }
             
-            timestamp := time.Now().Format("15:04:05")
             
-            jobCtx, jobCancel := context.WithTimeout(ctx, 5*time.Second)
-            job, err := apiClient.GetNextJob(jobCtx)
-            jobCancel()
-            
-            if err != nil {
-                fmt.Printf("[%s] Job check failed: %v\n", timestamp, err)
-            } else if job != nil {
-                fmt.Printf("[%s] Got job %s\n", timestamp, job.ID)
-                metricsTracker.RecordJobStart(job.ID)
-                
-                // Execute job
-                jobMetrics := &metrics.JobMetrics{
-                    JobID:     job.ID,
-                    DeviceID:  cfg.DeviceID,
-                    StartTime: time.Now(),
-                }
-                
-                // Simulate job execution (replace with actual execution)
-                time.Sleep(2 * time.Second)
-                jobMetrics.EndTime = time.Now()
-                jobMetrics.Success = true
-                jobMetrics.CPUSeconds = 2.0
-                jobMetrics.MemoryMB = 256
-                
-                metricsTracker.RecordJobComplete(jobMetrics)
-                
-                fmt.Printf("[%s] Job %s completed, earned: $%.4f\n", 
-                    timestamp, job.ID, jobMetrics.Earnings)
-            }
+            // Use the real worker to process jobs
+            jobWorker.ProcessNextJob(ctx)
             
         case <-statusTicker.C:
             timestamp := time.Now().Format("15:04:05")

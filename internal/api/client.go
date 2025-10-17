@@ -4,6 +4,7 @@ import (
     "bytes"
     "context"
     "crypto/sha256"
+    "encoding/base64"
     "encoding/hex"
     "encoding/json"
     "fmt"
@@ -13,6 +14,7 @@ import (
     "net/url"
     "os"
     "path/filepath"
+    "strings"
     "time"
 )
 
@@ -43,7 +45,6 @@ func (c *Client) SetBypassToken(token string) {
 }
 
 // Register tells the server about this agent for the first time
-// Think of this as introducing yourself at a new job
 func (c *Client) Register(ctx context.Context, referral, version string) error {
     payload := map[string]interface{}{
         "email":    c.email,
@@ -67,7 +68,6 @@ func (c *Client) Register(ctx context.Context, referral, version string) error {
 }
 
 // Beat sends a heartbeat to let the server know we're still alive
-// Like a lighthouse flashing to say "all is well"
 func (c *Client) Beat(ctx context.Context) error {
     payload := map[string]interface{}{
         "email":    c.email,
@@ -89,12 +89,11 @@ func (c *Client) Beat(ctx context.Context) error {
 }
 
 // doRequest is the internal workhorse that actually sends HTTP requests
-// It handles all the details like headers, bypass tokens, and JSON encoding
 func (c *Client) doRequest(ctx context.Context, method, path string, payload interface{}) (*http.Response, error) {
     // Build the full URL
     fullURL := c.baseURL + path
     
-    // Add bypass parameters if we have a token (for protected Vercel deployments)
+    // Add bypass parameters if we have a token
     if c.bypass != "" {
         parsed, err := url.Parse(fullURL)
         if err != nil {
@@ -139,17 +138,22 @@ func (c *Client) doRequest(ctx context.Context, method, path string, payload int
 
 // Job represents a unit of work from the server
 type Job struct {
-    ID          string            `json:"id"`
-    Type        string            `json:"type"`
-    ArtifactURL string            `json:"artifact_url,omitempty"`
-    SHA256      string            `json:"sha256,omitempty"`
-    Args        json.RawMessage   `json:"args,omitempty"`
-    MaxSeconds  int               `json:"max_seconds"`
-    MemoryMB    int               `json:"mem_mb"`
+    ID          string                 `json:"jobId"`
+    Type        string                 `json:"type"`
+    Args        map[string]interface{} `json:"args"`
+    TimeoutSec  int                    `json:"timeoutSec"`
+    ArtifactURL string                 `json:"artifactUrl"` // Now parsed from JSON
+    SHA256      string                 `json:"sha256"`      // Now parsed from JSON
+    MaxSeconds  int                    `json:"-"`
+    MemoryMB    int                    `json:"mem_mb"`
+}
+
+// parseJobArgs sets computed fields
+func (j *Job) parseJobArgs() {
+    j.MaxSeconds = j.TimeoutSec
 }
 
 // GetNextJob asks the server if there's any work available
-// Returns nil if no work is available (this is normal and expected)
 func (c *Client) GetNextJob(ctx context.Context) (*Job, error) {
     url := fmt.Sprintf("/api/agent/jobs/next?email=%s&deviceId=%s", c.email, c.deviceID)
     resp, err := c.doRequest(ctx, "GET", url, nil)
@@ -170,25 +174,48 @@ func (c *Client) GetNextJob(ctx context.Context) (*Job, error) {
     if err := json.NewDecoder(resp.Body).Decode(&job); err != nil {
         return nil, err
     }
+    job.parseJobArgs()
     return &job, nil
 }
 
-// DownloadArtifact downloads and verifies job file
-func (c *Client) DownloadArtifact(ctx context.Context, url, expectedSHA256 string) ([]byte, error) {
-    resp, err := http.Get(url)
-    if err != nil {
-        return nil, err
-    }
-    defer resp.Body.Close()
+// DownloadArtifact downloads and verifies job artifact
+// Supports both data URIs and regular URLs
+func (c *Client) DownloadArtifact(ctx context.Context, artifactURL, expectedSHA256 string) ([]byte, error) {
+    var data []byte
+    var err error
     
-    data, err := io.ReadAll(resp.Body)
-    if err != nil {
-        return nil, err
+    // Check if it's a data URI (base64 encoded)
+    if strings.HasPrefix(artifactURL, "data:") {
+        // Parse data URI: data:text/javascript;base64,ZnVu...
+        parts := strings.SplitN(artifactURL, ",", 2)
+        if len(parts) != 2 {
+            return nil, fmt.Errorf("invalid data URI format")
+        }
+        data, err = base64.StdEncoding.DecodeString(parts[1])
+        if err != nil {
+            return nil, fmt.Errorf("failed to decode base64: %w", err)
+        }
+    } else {
+        // Regular URL - download it
+        resp, err := http.Get(artifactURL)
+        if err != nil {
+            return nil, err
+        }
+        defer resp.Body.Close()
+        
+        data, err = io.ReadAll(resp.Body)
+        if err != nil {
+            return nil, err
+        }
     }
     
-    hash := sha256.Sum256(data)
-    if hex.EncodeToString(hash[:]) != expectedSHA256 {
-        return nil, fmt.Errorf("SHA256 mismatch")
+    // Verify SHA256 if provided
+    if expectedSHA256 != "" {
+        hash := sha256.Sum256(data)
+        actualSHA256 := hex.EncodeToString(hash[:])
+        if actualSHA256 != expectedSHA256 {
+            return nil, fmt.Errorf("SHA256 mismatch: expected %s, got %s", expectedSHA256, actualSHA256)
+        }
     }
     
     return data, nil
@@ -212,7 +239,6 @@ func (c *Client) ReportJobComplete(ctx context.Context, jobID, status string, re
 }
 
 // UploadJobResult uploads a result file to the server after job completion
-// This lets companies download the processed files they requested
 func (c *Client) UploadJobResult(ctx context.Context, jobID, filePath string) error {
     file, err := os.Open(filePath)
     if err != nil {
