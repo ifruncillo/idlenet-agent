@@ -15,7 +15,7 @@ type Worker struct {
     client *api.Client
 }
 
-func New(client *api.Client) *Worker {
+func New(client *api.Client, email, deviceID string) *Worker {
     return &Worker{client: client}
 }
 
@@ -28,12 +28,12 @@ func (w *Worker) Run(ctx context.Context) error {
         case <-ctx.Done():
             return ctx.Err()
         case <-ticker.C:
-            w.processNextJob(ctx)
+            w.ProcessNextJob(ctx)
         }
     }
 }
 
-func (w *Worker) processNextJob(ctx context.Context) {
+func (w *Worker) ProcessNextJob(ctx context.Context) {
     // Get next job from the queue
     job, err := w.client.GetNextJob(ctx)
     if err != nil {
@@ -59,10 +59,20 @@ func (w *Worker) processNextJob(ctx context.Context) {
             return
         }
         fmt.Printf("Downloaded %d bytes, SHA256 verified\n", len(artifactData))
+        if len(artifactData) > 0 {
+            preview := artifactData
+            if len(preview) > 100 {
+                preview = preview[:100]
+            }
+            fmt.Printf("First %d chars of artifact: %s...\n", len(preview), string(preview))
+        }
     }
 
-    // Execute the job
-    result, err := executor.ExecuteJob(ctx, job.Type, artifactData, job.Args, job.MaxSeconds)
+    // Convert args map back to JSON for executor
+    argsJSON, _ := json.Marshal(job.Args)
+
+    // Execute the job using the function, not method
+    result, err := executor.ExecuteJob(ctx, job.Type, artifactData, argsJSON, job.MaxSeconds)
     if err != nil {
         fmt.Printf("Job execution failed: %v\n", err)
     }
@@ -98,7 +108,6 @@ func (w *Worker) processNextJob(ctx context.Context) {
     if err != nil {
         status = "failed"
     }
-
     if err := w.client.ReportJobComplete(ctx, job.ID, status, result, execTime); err != nil {
         fmt.Printf("Failed to report job completion: %v\n", err)
     } else {
