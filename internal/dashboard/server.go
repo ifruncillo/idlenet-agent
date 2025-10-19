@@ -5,11 +5,11 @@ import (
 "encoding/json"
 "fmt"
 "net/http"
+"os"
 "os/exec"
+"path/filepath"
 "runtime"
 "time"
-"path/filepath"
-"os"
 "github.com/ifruncillo/idlenet-agent/internal/config"
 "github.com/ifruncillo/idlenet-agent/internal/metrics"
 )
@@ -17,29 +17,47 @@ import (
 type Server struct {
 cfg     *config.Config
 metrics *metrics.Tracker
+history *History
 port    int
 }
 
 func New(cfg *config.Config, metricsTracker *metrics.Tracker) *Server {
-return &Server{cfg: cfg, metrics: metricsTracker, port: 8090}
+return &Server{
+cfg:     cfg,
+metrics: metricsTracker,
+history: NewHistory(),
+port:    8090,
+}
 }
 
 func (s *Server) Start(ctx context.Context) error {
 mux := http.NewServeMux()
 
-// Get current working directory
 cwd, _ := os.Getwd()
 assetsPath := filepath.Join(cwd, "internal", "dashboard", "assets")
 fmt.Printf("Serving files from: %s\n", assetsPath)
 
-// Serve static files
 fs := http.FileServer(http.Dir(assetsPath))
 mux.Handle("/", fs)
-
-// API endpoint
 mux.HandleFunc("/api/stats", s.handleStats)
+mux.HandleFunc("/api/history", s.handleHistory)
 
 srv := &http.Server{Addr: fmt.Sprintf(":%d", s.port), Handler: mux}
+
+// Record data point every minute
+go func() {
+ticker := time.NewTicker(1 * time.Minute)
+defer ticker.Stop()
+for {
+select {
+case <-ticker.C:
+completed, _, _, earnings := s.metrics.GetStats()
+s.history.Add(earnings, completed)
+case <-ctx.Done():
+return
+}
+}
+}()
 
 go func() {
 time.Sleep(2 * time.Second)
@@ -67,6 +85,17 @@ stats := map[string]any{
 }
 w.Header().Set("Content-Type", "application/json")
 json.NewEncoder(w).Encode(stats)
+}
+
+func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
+duration := r.URL.Query().Get("range")
+if duration == "" {
+duration = "24h"
+}
+
+points := s.history.GetRange(duration)
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(points)
 }
 
 func (s *Server) openBrowser(url string) {

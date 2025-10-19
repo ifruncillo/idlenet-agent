@@ -2,12 +2,15 @@
 <html>
 <head>
     <title>EarnGrid Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+        * { margin: 0; padding: 0; box-sizing: border-box; outline: none; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: #f8fafc;
             color: #334155;
+            -webkit-user-select: none;
+            user-select: none;
         }
         .header {
             background: white;
@@ -99,6 +102,25 @@
             background: #cbd5e1;
             cursor: not-allowed;
         }
+        .time-btn {
+            padding: 0.25rem 0.75rem;
+            border: 1px solid #e2e8f0;
+            background: white;
+            color: #334155;
+            border-radius: 0.25rem;
+            cursor: pointer;
+            font-size: 0.875rem;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .time-btn:hover {
+            border-color: #10b981;
+        }
+        .time-btn.active {
+            background: #10b981;
+            color: white;
+            border-color: #10b981;
+        }
         .progress {
             height: 8px;
             background: #e2e8f0;
@@ -112,6 +134,7 @@
             transition: width 0.3s;
         }
         .payment-option {
+            display: block;
             padding: 1rem;
             background: #f8fafc;
             border: 2px solid #e2e8f0;
@@ -120,9 +143,6 @@
             cursor: pointer;
         }
         .payment-option:hover { border-color: #10b981; }
-            input[type="radio"] { cursor: pointer; }
-        * { outline: none; }
-        body { -webkit-user-select: none; user-select: none; }
         #email, #deviceId { -webkit-user-select: text; user-select: text; }
     </style>
 </head>
@@ -157,6 +177,19 @@
                 <div class="label">Performance</div>
                 <div class="value"><span id="rate">0</span>/hr</div>
             </div>
+        </div>
+        
+        <div class="card" style="margin-bottom: 1.5rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <h3>Earnings Over Time</h3>
+                <div style="display: flex; gap: 0.5rem;">
+                    <button class="time-btn active" onclick="setChartRange('1h', this)">1H</button>
+                    <button class="time-btn" onclick="setChartRange('24h', this)">24H</button>
+                    <button class="time-btn" onclick="setChartRange('7d', this)">7D</button>
+                    <button class="time-btn" onclick="setChartRange('30d', this)">30D</button>
+                </div>
+            </div>
+            <canvas id="earningsChart" style="max-height: 200px;"></canvas>
         </div>
         
         <div class="card">
@@ -199,17 +232,17 @@
             
             <div class="card">
                 <h3 style="margin-bottom: 1rem;">Payment Method</h3>
-                <label class="payment-option" style="display: block;">
+                <label class="payment-option">
                     <input type="radio" name="payment" checked style="margin-right: 0.5rem;">
                     <span style="font-weight: 600;">PayPal</span>
                     <span style="color: #64748b; font-size: 0.875rem;"> - Instant transfer</span>
                 </label>
-                <label class="payment-option" style="display: block;">
+                <label class="payment-option">
                     <input type="radio" name="payment" style="margin-right: 0.5rem;">
                     <span style="font-weight: 600;">Bank Transfer</span>
                     <span style="color: #64748b; font-size: 0.875rem;"> - 2-3 days</span>
                 </label>
-                <label class="payment-option" style="display: block;">
+                <label class="payment-option">
                     <input type="radio" name="payment" style="margin-right: 0.5rem;">
                     <span style="font-weight: 600;">Cryptocurrency</span>
                     <span style="color: #64748b; font-size: 0.875rem;"> - USDT/BTC/ETH</span>
@@ -235,6 +268,8 @@
     </div>
     
     <script>
+        var chart = null;
+        
         function showTab(index) {
             var tabs = document.querySelectorAll('.tab');
             var contents = document.querySelectorAll('.content');
@@ -252,6 +287,81 @@
             var m = Math.floor((seconds % 3600) / 60);
             var s = Math.floor(seconds % 60);
             return h + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+        }
+        
+        function setChartRange(range, btn) {
+            // Update active button
+            document.querySelectorAll('.time-btn').forEach(function(b) {
+                b.classList.remove('active');
+            });
+            if (btn) {
+                btn.classList.add('active');
+            }
+            
+            // Fetch historical data
+            fetch('/api/history?range=' + range)
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    chart.data.labels = [];
+                    chart.data.datasets[0].data = [];
+                    
+                    data.forEach(function(point) {
+                        var date = new Date(point.time);
+                        var label = date.getHours() + ':' + String(date.getMinutes()).padStart(2, '0');
+                        if (range === '7d' || range === '30d') {
+                            label = (date.getMonth() + 1) + '/' + date.getDate();
+                        }
+                        chart.data.labels.push(label);
+                        chart.data.datasets[0].data.push(point.earnings);
+                    });
+                    
+                    chart.update();
+                })
+                .catch(function(err) {
+                    console.error('History error:', err);
+                });
+        }
+        
+        function initChart() {
+            var ctx = document.getElementById('earningsChart').getContext('2d');
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Earnings',
+                        data: [],
+                        borderColor: '#10b981',
+                        backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                        tension: 0.4,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: "Time"
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: "Earnings ($)"
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    }
+                }
+            });
         }
         
         function updateStats() {
@@ -277,33 +387,22 @@
                         btn.disabled = false;
                         btn.textContent = 'Request Payout';
                     }
+                    
+                    // Store for chart updates
+                    window.currentEarnings = data.earnings;
                 })
                 .catch(function(err) {
                     console.error('Stats error:', err);
                 });
         }
         
+        initChart();
         updateStats();
         setInterval(updateStats, 2000);
         
-        // Add click feedback for buttons
-        document.querySelectorAll('.btn').forEach(function(btn) {
-            if (!btn.disabled) {
-                btn.addEventListener('click', function() {
-                    if (this.textContent.includes('Save')) {
-                        this.textContent = 'Saved!';
-                        var originalText = 'Save Method';
-                        var button = this;
-                        setTimeout(function() {
-                            button.textContent = originalText;
-                        }, 2000);
-                    }
-                });
-            }
-        });
+        // Load default chart data on start
+        setChartRange('1h', document.querySelector('.time-btn.active'));
     </script>
 </body>
 </html>
-
-
 
