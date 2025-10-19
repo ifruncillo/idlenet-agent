@@ -9,46 +9,43 @@ import (
 
     "github.com/ifruncillo/idlenet-agent/internal/api"
     "github.com/ifruncillo/idlenet-agent/internal/executor"
+    "github.com/ifruncillo/idlenet-agent/internal/metrics"
 )
 
 type Worker struct {
-    client *api.Client
+    client  *api.Client
+    tracker *metrics.Tracker
 }
 
 func New(client *api.Client, email, deviceID string) *Worker {
-    return &Worker{client: client}
-}
-
-func (w *Worker) Run(ctx context.Context) error {
-    ticker := time.NewTicker(20 * time.Second)
-    defer ticker.Stop()
-
-    for {
-        select {
-        case <-ctx.Done():
-            return ctx.Err()
-        case <-ticker.C:
-            w.ProcessNextJob(ctx)
-        }
+    return &Worker{
+        client: client,
+        tracker: metrics.NewTracker(),
     }
 }
 
+func (w *Worker) SetTracker(tracker *metrics.Tracker) {
+    w.tracker = tracker
+}
+
 func (w *Worker) ProcessNextJob(ctx context.Context) {
-    // Get next job from the queue
     job, err := w.client.GetNextJob(ctx)
     if err != nil {
         fmt.Printf("Error getting job: %v\n", err)
         return
     }
     if job == nil {
-        // No jobs available
         return
     }
 
     fmt.Printf("Got job %s of type %s\n", job.ID, job.Type)
     startTime := time.Now()
 
-    // Download the artifact if provided
+    // Record job start
+    if w.tracker != nil {
+        w.tracker.RecordJobStart(job.ID)
+    }
+
     var artifactData []byte
     if job.ArtifactURL != "" {
         artifactData, err = w.client.DownloadArtifact(ctx, job.ArtifactURL, job.SHA256)
@@ -68,19 +65,16 @@ func (w *Worker) ProcessNextJob(ctx context.Context) {
         }
     }
 
-    // Convert args map back to JSON for executor
     argsJSON, _ := json.Marshal(job.Args)
-
-    // Execute the job using the function, not method
     result, err := executor.ExecuteJob(ctx, job.Type, artifactData, argsJSON, job.MaxSeconds)
+    
+    success := err == nil
     if err != nil {
         fmt.Printf("Job execution failed: %v\n", err)
     }
 
-    // Check if result contains output that should be saved as a file
     resultFilePath := ""
     if output, ok := result["output"].(string); ok && output != "" {
-        // Create a result file
         tmpFile, createErr := os.CreateTemp("", fmt.Sprintf("job-%s-result-*.txt", job.ID))
         if createErr == nil {
             tmpFile.WriteString(output)
@@ -90,7 +84,6 @@ func (w *Worker) ProcessNextJob(ctx context.Context) {
         }
     }
 
-    // Upload result file if one was created
     if resultFilePath != "" {
         fmt.Printf("Uploading result file for job %s...\n", job.ID)
         if uploadErr := w.client.UploadJobResult(ctx, job.ID, resultFilePath); uploadErr != nil {
@@ -98,16 +91,31 @@ func (w *Worker) ProcessNextJob(ctx context.Context) {
         } else {
             fmt.Printf("Result uploaded successfully for job %s\n", job.ID)
         }
-        // Clean up temp file
         os.Remove(resultFilePath)
     }
 
-    // Report completion
     execTime := time.Since(startTime).Milliseconds()
     status := "completed"
     if err != nil {
         status = "failed"
     }
+
+    // Record job completion with metrics
+    if w.tracker != nil {
+        jobMetrics := &metrics.JobMetrics{
+            JobID:     job.ID,
+            DeviceID:  w.client.DeviceID,
+            StartTime: startTime,
+            EndTime:   time.Now(),
+            CPUSeconds: time.Since(startTime).Seconds(),
+            Success:   success,
+        }
+        if err != nil {
+            jobMetrics.ErrorMessage = err.Error()
+        }
+        w.tracker.RecordJobComplete(jobMetrics)
+    }
+
     if err := w.client.ReportJobComplete(ctx, job.ID, status, result, execTime); err != nil {
         fmt.Printf("Failed to report job completion: %v\n", err)
     } else {

@@ -23,16 +23,16 @@ type Client struct {
     baseURL    string
     httpClient *http.Client
     email      string
-    deviceID   string
+    DeviceID   string
     bypass     string  // Optional Vercel bypass token for protected deployments
 }
 
 // NewClient creates a new API client with the given configuration
-func NewClient(baseURL, email, deviceID string) *Client {
+func NewClient(baseURL, email, DeviceID string) *Client {
     return &Client{
         baseURL:  baseURL,
         email:    email,
-        deviceID: deviceID,
+        DeviceID: DeviceID,
         httpClient: &http.Client{
             Timeout: 30 * time.Second,  // Don't wait forever for responses
         },
@@ -48,7 +48,7 @@ func (c *Client) SetBypassToken(token string) {
 func (c *Client) Register(ctx context.Context, referral, version string) error {
     payload := map[string]interface{}{
         "email":    c.email,
-        "deviceId": c.deviceID,
+        "deviceId": c.DeviceID,
         "referral": referral,
         "version":  version,
     }
@@ -71,7 +71,7 @@ func (c *Client) Register(ctx context.Context, referral, version string) error {
 func (c *Client) Beat(ctx context.Context) error {
     payload := map[string]interface{}{
         "email":    c.email,
-        "deviceId": c.deviceID,
+        "deviceId": c.DeviceID,
     }
     
     response, err := c.doRequest(ctx, "POST", "/api/agent/beat", payload)
@@ -155,7 +155,7 @@ func (j *Job) parseJobArgs() {
 
 // GetNextJob asks the server if there's any work available
 func (c *Client) GetNextJob(ctx context.Context) (*Job, error) {
-    url := fmt.Sprintf("/api/agent/jobs/next?email=%s&deviceId=%s", c.email, c.deviceID)
+    url := fmt.Sprintf("/api/agent/jobs/next?email=%s&deviceId=%s", c.email, c.DeviceID)
     resp, err := c.doRequest(ctx, "GET", url, nil)
     if err != nil {
         return nil, err
@@ -296,3 +296,5 @@ func (c *Client) UploadJobResult(ctx context.Context, jobID, filePath string) er
 
     return nil
 }
+
+

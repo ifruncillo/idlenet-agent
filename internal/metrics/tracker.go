@@ -101,6 +101,12 @@ func (t *Tracker) GetCurrentMetrics() *SystemMetrics {
     return &metrics
 }
 
+
+func (t *Tracker) GetSessionStart() time.Time {
+t.mu.RLock()
+defer t.mu.RUnlock()
+return t.sessionStart
+}
 func (t *Tracker) GetStats() (completed, failed int, cpuTime time.Duration, earnings float64) {
     t.mu.RLock()
     defer t.mu.RUnlock()

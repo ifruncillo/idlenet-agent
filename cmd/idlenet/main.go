@@ -10,6 +10,7 @@ import (
     
     "github.com/ifruncillo/idlenet-agent/internal/api"
     "github.com/ifruncillo/idlenet-agent/internal/config"
+	"github.com/ifruncillo/idlenet-agent/internal/dashboard"
     "github.com/ifruncillo/idlenet-agent/internal/idle"
     "github.com/ifruncillo/idlenet-agent/internal/metrics"
     "github.com/ifruncillo/idlenet-agent/internal/resource"
@@ -74,6 +75,7 @@ func main() {
     
     // Initialize worker for real job execution
     jobWorker := worker.New(apiClient, cfg.Email, cfg.DeviceID)
+    jobWorker.SetTracker(metricsTracker)
     
     fmt.Println("========================================")
     
@@ -94,6 +96,15 @@ func main() {
     
     metricsTicker := time.NewTicker(5 * time.Minute)
     defer metricsTicker.Stop()
+
+// Start dashboard
+dashServer := dashboard.New(cfg, metricsTracker)
+go func() {
+if err := dashServer.Start(ctx); err != nil {
+fmt.Printf("Dashboard server error: %v\n", err)
+}
+}()
+fmt.Printf("Dashboard available at: http://localhost:8090\n")
     
     fmt.Println("Agent running. Press Ctrl+C to stop.")
     
@@ -151,3 +162,5 @@ func main() {
         }
     }
 }
+
+
