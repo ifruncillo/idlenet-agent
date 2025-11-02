@@ -1,9 +1,11 @@
 package resource
 
 import (
+    "os"
     "runtime"
+    "strings"
     "time"
-    
+
     "github.com/ifruncillo/idlenet-agent/internal/idle"
 )
 
@@ -138,7 +140,33 @@ func (m *Manager) GetCoreCount() int {
     return allowedCores
 }
 
-// isLaptop attempts to detect if running on a laptop
+// isLaptop attempts to detect if running on a laptop by checking for battery presence
 func isLaptop() bool {
-    return runtime.NumCPU() <= 8
+    switch runtime.GOOS {
+    case "linux":
+        // Check for battery in /sys/class/power_supply/
+        entries, err := os.ReadDir("/sys/class/power_supply")
+        if err != nil {
+            return runtime.NumCPU() <= 8 // Fallback to core count heuristic
+        }
+        for _, entry := range entries {
+            if strings.HasPrefix(entry.Name(), "BAT") {
+                return true
+            }
+        }
+        return false
+
+    case "darwin":
+        // On macOS, check if battery info is available
+        // TODO: Could use IOKit to check for battery, for now use heuristic
+        return runtime.NumCPU() <= 16 // Modern Macs can have many cores
+
+    case "windows":
+        // On Windows, check for ACPI battery presence
+        // TODO: Could use Win32 API to check, for now use heuristic
+        return runtime.NumCPU() <= 16
+
+    default:
+        return runtime.NumCPU() <= 8
+    }
 }

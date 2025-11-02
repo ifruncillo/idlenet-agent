@@ -54,15 +54,33 @@ case <-ticker.C:
 completed, _, _, earnings := s.metrics.GetStats()
 s.history.Add(earnings, completed)
 case <-ctx.Done():
+s.history.Flush() // Flush on shutdown
 return
 }
 }
 }()
 
+// Flush history to disk every 10 minutes
+go func() {
+ticker := time.NewTicker(10 * time.Minute)
+defer ticker.Stop()
+for {
+select {
+case <-ticker.C:
+s.history.Flush()
+case <-ctx.Done():
+return
+}
+}
+}()
+
+// Auto-open browser if enabled
+if s.cfg.AutoOpenDashboard {
 go func() {
 time.Sleep(2 * time.Second)
 s.openBrowser(fmt.Sprintf("http://localhost:%d", s.port))
 }()
+}
 
 go func() {
 <-ctx.Done()
@@ -108,5 +126,7 @@ cmd = exec.Command("open", url)
 default:
 cmd = exec.Command("xdg-open", url)
 }
-cmd.Start()
+if err := cmd.Start(); err != nil {
+fmt.Printf("Could not open browser: %v\n", err)
+}
 }

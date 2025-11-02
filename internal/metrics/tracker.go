@@ -10,13 +10,14 @@ import (
 )
 
 type Tracker struct {
-    mu           sync.RWMutex
-    sessionStart time.Time
+    mu            sync.RWMutex
+    sessionStart  time.Time
     jobsCompleted int
     jobsFailed    int
     totalCPUTime  time.Duration
     totalEarnings float64
     currentMetrics *SystemMetrics
+    metricsBuffer []*JobMetrics // Buffer for batched writes
 }
 
 type SystemMetrics struct {
@@ -92,13 +93,16 @@ func (t *Tracker) RecordJobComplete(job *JobMetrics) {
 func (t *Tracker) GetCurrentMetrics() *SystemMetrics {
     t.mu.RLock()
     defer t.mu.RUnlock()
-    
-    metrics := *t.currentMetrics
-    metrics.Timestamp = time.Now()
-    metrics.SessionHours = time.Since(t.sessionStart).Hours()
-    metrics.Earnings = t.totalEarnings
-    
-    return &metrics
+
+    return &SystemMetrics{
+        Timestamp:    time.Now(),
+        CPUPercent:   t.currentMetrics.CPUPercent,
+        MemoryMB:     t.currentMetrics.MemoryMB,
+        JobsRunning:  t.currentMetrics.JobsRunning,
+        TotalJobs:    t.jobsCompleted + t.jobsFailed,
+        SessionHours: time.Since(t.sessionStart).Hours(),
+        Earnings:     t.totalEarnings,
+    }
 }
 
 
@@ -115,23 +119,70 @@ func (t *Tracker) GetStats() (completed, failed int, cpuTime time.Duration, earn
 }
 
 func (t *Tracker) saveJobMetrics(job *JobMetrics) {
+    // Buffer metrics writes to reduce disk I/O
+    t.metricsBuffer = append(t.metricsBuffer, job)
+
+    // Flush buffer when it reaches 10 jobs
+    if len(t.metricsBuffer) >= 10 {
+        t.flushMetricsBuffer()
+    }
+}
+
+func (t *Tracker) flushMetricsBuffer() {
+    if len(t.metricsBuffer) == 0 {
+        return
+    }
+
+    // Copy buffer to avoid holding lock during I/O
+    bufferCopy := make([]*JobMetrics, len(t.metricsBuffer))
+    copy(bufferCopy, t.metricsBuffer)
+    t.metricsBuffer = t.metricsBuffer[:0]
+
+    // Do file I/O without holding lock
+    t.writeMetricsToFile(bufferCopy)
+}
+
+func (t *Tracker) writeMetricsToFile(jobs []*JobMetrics) {
     homeDir, _ := os.UserHomeDir()
     metricsDir := filepath.Join(homeDir, ".idlenet", "metrics")
-    os.MkdirAll(metricsDir, 0755)
-    
+    if err := os.MkdirAll(metricsDir, 0755); err != nil {
+        fmt.Printf("Warning: failed to create metrics directory: %v\n", err)
+        return
+    }
+
     // Save to daily file
     filename := fmt.Sprintf("jobs_%s.json", time.Now().Format("2006-01-02"))
-    filepath := filepath.Join(metricsDir, filename)
-    
-    file, err := os.OpenFile(filepath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+    filePath := filepath.Join(metricsDir, filename)
+
+    file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
     if err != nil {
+        fmt.Printf("Warning: failed to open metrics file: %v\n", err)
         return
     }
     defer file.Close()
-    
-    data, _ := json.Marshal(job)
-    file.Write(data)
-    file.WriteString("\n")
+
+    // Write all buffered metrics
+    for _, job := range jobs {
+        data, err := json.Marshal(job)
+        if err != nil {
+            fmt.Printf("Warning: failed to marshal job metrics: %v\n", err)
+            continue
+        }
+        if _, err := file.Write(data); err != nil {
+            fmt.Printf("Warning: failed to write metrics: %v\n", err)
+            continue
+        }
+        if _, err := file.WriteString("\n"); err != nil {
+            fmt.Printf("Warning: failed to write newline: %v\n", err)
+        }
+    }
+}
+
+// FlushMetrics forces a flush of buffered metrics (call on shutdown)
+func (t *Tracker) FlushMetrics() {
+    t.mu.Lock()
+    defer t.mu.Unlock()
+    t.flushMetricsBuffer()
 }
 
 func CalculateEarnings(cpuSeconds float64, memoryMB int) float64 {

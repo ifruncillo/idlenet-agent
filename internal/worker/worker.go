@@ -56,13 +56,6 @@ func (w *Worker) ProcessNextJob(ctx context.Context) {
             return
         }
         fmt.Printf("Downloaded %d bytes, SHA256 verified\n", len(artifactData))
-        if len(artifactData) > 0 {
-            preview := artifactData
-            if len(preview) > 100 {
-                preview = preview[:100]
-            }
-            fmt.Printf("First %d chars of artifact: %s...\n", len(preview), string(preview))
-        }
     }
 
     argsJSON, _ := json.Marshal(job.Args)
@@ -73,14 +66,22 @@ func (w *Worker) ProcessNextJob(ctx context.Context) {
         fmt.Printf("Job execution failed: %v\n", err)
     }
 
+    // Only create temp file for large outputs (>100KB) to reduce disk I/O
     resultFilePath := ""
-    if output, ok := result["output"].(string); ok && output != "" {
+    if output, ok := result["output"].(string); ok && output != "" && len(output) > 100*1024 {
         tmpFile, createErr := os.CreateTemp("", fmt.Sprintf("job-%s-result-*.txt", job.ID))
-        if createErr == nil {
-            tmpFile.WriteString(output)
-            tmpFile.Close()
-            resultFilePath = tmpFile.Name()
-            fmt.Printf("Created result file: %s\n", resultFilePath)
+        if createErr != nil {
+            fmt.Printf("Warning: failed to create result file: %v\n", createErr)
+        } else {
+            if _, writeErr := tmpFile.WriteString(output); writeErr != nil {
+                tmpFile.Close()
+                os.Remove(tmpFile.Name())
+                fmt.Printf("Warning: failed to write result file: %v\n", writeErr)
+            } else {
+                tmpFile.Close()
+                resultFilePath = tmpFile.Name()
+                fmt.Printf("Created result file: %s (%d bytes)\n", resultFilePath, len(output))
+            }
         }
     }
 
