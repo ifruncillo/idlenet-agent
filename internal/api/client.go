@@ -166,8 +166,8 @@ func (j *Job) parseJobArgs() {
 
 // GetNextJob asks the server if there's any work available
 func (c *Client) GetNextJob(ctx context.Context) (*Job, error) {
-    url := fmt.Sprintf("/api/agent/jobs/next?email=%s&deviceId=%s", c.email, c.DeviceID)
-    resp, err := c.doRequest(ctx, "GET", url, nil)
+    path := fmt.Sprintf("/api/agent/jobs/next?email=%s&deviceId=%s", c.email, c.DeviceID)
+    resp, err := c.doRequest(ctx, "GET", path, nil)
     if err != nil {
         return nil, err
     }
@@ -193,8 +193,7 @@ func (c *Client) GetNextJob(ctx context.Context) (*Job, error) {
 // Supports both data URIs and regular URLs
 func (c *Client) DownloadArtifact(ctx context.Context, artifactURL, expectedSHA256 string) ([]byte, error) {
     var data []byte
-    var err error
-    
+
     // Check if it's a data URI (base64 encoded)
     if strings.HasPrefix(artifactURL, "data:") {
         // Parse data URI: data:text/javascript;base64,ZnVu...
@@ -202,10 +201,11 @@ func (c *Client) DownloadArtifact(ctx context.Context, artifactURL, expectedSHA2
         if len(parts) != 2 {
             return nil, fmt.Errorf("invalid data URI format")
         }
-        data, err = base64.StdEncoding.DecodeString(parts[1])
+        decoded, err := base64.StdEncoding.DecodeString(parts[1])
         if err != nil {
             return nil, fmt.Errorf("failed to decode base64: %w", err)
         }
+        data = decoded
     } else {
         // Regular URL - download it with context support
         req, err := http.NewRequestWithContext(ctx, "GET", artifactURL, nil)
@@ -219,10 +219,11 @@ func (c *Client) DownloadArtifact(ctx context.Context, artifactURL, expectedSHA2
         }
         defer resp.Body.Close()
 
-        data, err = io.ReadAll(resp.Body)
+        downloaded, err := io.ReadAll(resp.Body)
         if err != nil {
             return nil, err
         }
+        data = downloaded
     }
     
     // Verify SHA256 if provided
@@ -273,8 +274,10 @@ func (c *Client) UploadJobResult(ctx context.Context, jobID, filePath string) er
     if _, err := io.Copy(part, file); err != nil {
         return fmt.Errorf("failed to copy file: %w", err)
     }
-    
-    writer.WriteField("jobId", jobID)
+
+    if err := writer.WriteField("jobId", jobID); err != nil {
+        return fmt.Errorf("failed to write form field: %w", err)
+    }
     writer.Close()
 
     // Build URL with bypass token if available

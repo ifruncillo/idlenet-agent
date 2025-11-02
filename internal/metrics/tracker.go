@@ -133,9 +133,22 @@ func (t *Tracker) flushMetricsBuffer() {
         return
     }
 
+    // Copy buffer to avoid holding lock during I/O
+    bufferCopy := make([]*JobMetrics, len(t.metricsBuffer))
+    copy(bufferCopy, t.metricsBuffer)
+    t.metricsBuffer = t.metricsBuffer[:0]
+
+    // Do file I/O without holding lock
+    t.writeMetricsToFile(bufferCopy)
+}
+
+func (t *Tracker) writeMetricsToFile(jobs []*JobMetrics) {
     homeDir, _ := os.UserHomeDir()
     metricsDir := filepath.Join(homeDir, ".idlenet", "metrics")
-    os.MkdirAll(metricsDir, 0755)
+    if err := os.MkdirAll(metricsDir, 0755); err != nil {
+        fmt.Printf("Warning: failed to create metrics directory: %v\n", err)
+        return
+    }
 
     // Save to daily file
     filename := fmt.Sprintf("jobs_%s.json", time.Now().Format("2006-01-02"))
@@ -143,19 +156,26 @@ func (t *Tracker) flushMetricsBuffer() {
 
     file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
     if err != nil {
+        fmt.Printf("Warning: failed to open metrics file: %v\n", err)
         return
     }
     defer file.Close()
 
     // Write all buffered metrics
-    for _, job := range t.metricsBuffer {
-        data, _ := json.Marshal(job)
-        file.Write(data)
-        file.WriteString("\n")
+    for _, job := range jobs {
+        data, err := json.Marshal(job)
+        if err != nil {
+            fmt.Printf("Warning: failed to marshal job metrics: %v\n", err)
+            continue
+        }
+        if _, err := file.Write(data); err != nil {
+            fmt.Printf("Warning: failed to write metrics: %v\n", err)
+            continue
+        }
+        if _, err := file.WriteString("\n"); err != nil {
+            fmt.Printf("Warning: failed to write newline: %v\n", err)
+        }
     }
-
-    // Clear buffer
-    t.metricsBuffer = t.metricsBuffer[:0]
 }
 
 // FlushMetrics forces a flush of buffered metrics (call on shutdown)

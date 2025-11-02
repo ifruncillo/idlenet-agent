@@ -102,11 +102,38 @@ h.Points = h.Points[:n]
 // Flush writes dirty data to disk (call periodically)
 func (h *History) Flush() {
 h.mu.Lock()
-defer h.mu.Unlock()
+if !h.dirty {
+h.mu.Unlock()
+return
+}
 
-if h.dirty {
-h.save()
+// Copy points to avoid holding lock during I/O
+pointsCopy := make([]DataPoint, len(h.Points))
+copy(pointsCopy, h.Points)
+filePath := h.file
 h.dirty = false
+h.mu.Unlock()
+
+// Do file I/O without holding lock
+h.saveToFile(filePath, pointsCopy)
+}
+
+func (h *History) saveToFile(filePath string, points []DataPoint) {
+// Ensure directory exists
+dir := filepath.Dir(filePath)
+if err := os.MkdirAll(dir, 0755); err != nil {
+fmt.Printf("Warning: failed to create history directory: %v\n", err)
+return
+}
+
+data, err := json.MarshalIndent(points, "", "  ")
+if err != nil {
+fmt.Printf("Warning: failed to marshal history: %v\n", err)
+return
+}
+
+if err := os.WriteFile(filePath, data, 0644); err != nil {
+fmt.Printf("Warning: failed to write history file: %v\n", err)
 }
 }
 
@@ -130,7 +157,8 @@ default:
 cutoff = now.Add(-24 * time.Hour)
 }
 
-var result []DataPoint
+// Pre-allocate with expected capacity
+result := make([]DataPoint, 0, len(h.Points))
 for _, p := range h.Points {
 if p.Time.After(cutoff) {
 result = append(result, p)
