@@ -45,7 +45,6 @@ func main() {
     
     // Initialize metrics tracker
     metricsTracker := metrics.NewTracker()
-    perfMonitor := metrics.NewPerformanceMonitor()
     
     idleTime, err := idle.GetIdleTime()
     if err == nil {
@@ -93,9 +92,6 @@ func main() {
     
     statusTicker := time.NewTicker(1 * time.Minute)
     defer statusTicker.Stop()
-    
-    metricsTicker := time.NewTicker(5 * time.Minute)
-    defer metricsTicker.Stop()
 
 // Start dashboard
 dashServer := dashboard.New(cfg, metricsTracker)
@@ -112,8 +108,9 @@ fmt.Printf("Dashboard available at: http://localhost:8090\n")
         select {
         case <-ctx.Done():
             fmt.Println("\nShutting down...")
+            metricsTracker.FlushMetrics() // Flush any buffered metrics
             completed, failed, cpuTime, earnings := metricsTracker.GetStats()
-            fmt.Printf("Session stats: %d completed, %d failed, CPU time: %v, Earnings: $%.4f\n", 
+            fmt.Printf("Session stats: %d completed, %d failed, CPU time: %v, Earnings: $%.4f\n",
                 completed, failed, cpuTime, earnings)
             return
             
@@ -146,19 +143,11 @@ fmt.Printf("Dashboard available at: http://localhost:8090\n")
             timestamp := time.Now().Format("15:04:05")
             idleTime, _ := idle.GetIdleTime()
             cpuLimit, memLimit := resourceMgr.GetLimits()
-            
+
             currentMetrics := metricsTracker.GetCurrentMetrics()
-            fmt.Printf("[%s] Status: Idle=%v, Limits=CPU:%d%% MEM:%d%%, Jobs=%d, Earnings=$%.4f\n", 
-                timestamp, idleTime, cpuLimit, memLimit, 
+            fmt.Printf("[%s] Status: Idle=%v, Limits=CPU:%d%% MEM:%d%%, Jobs=%d, Earnings=$%.4f\n",
+                timestamp, idleTime, cpuLimit, memLimit,
                 currentMetrics.TotalJobs, currentMetrics.Earnings)
-                
-        case <-metricsTicker.C:
-            // Sample performance and check system health
-            sample := perfMonitor.Sample()
-            if !perfMonitor.IsSystemHealthy() {
-                fmt.Println("Warning: System performance impact detected")
-            }
-            _ = sample // Use sample data as needed
         }
     }
 }

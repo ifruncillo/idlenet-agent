@@ -22,10 +22,11 @@ type Config struct {
     UpdatedAt         time.Time `json:"updated_at"`
     
     // User preferences for resource usage
-    ResourceMode      string    `json:"resource_mode"`      // aggressive, balanced, conservative, idle-only
-    AllowBackground   bool      `json:"allow_background"`   // Run jobs while system is in use
-    MaxCPUPercent     int       `json:"max_cpu_percent"`    // Override max CPU usage
-    MaxMemoryMB       int       `json:"max_memory_mb"`      // Override max memory usage
+    ResourceMode       string `json:"resource_mode"`        // aggressive, balanced, conservative, idle-only
+    AllowBackground    bool   `json:"allow_background"`     // Run jobs while system is in use
+    MaxCPUPercent      int    `json:"max_cpu_percent"`      // Override max CPU usage
+    MaxMemoryMB        int    `json:"max_memory_mb"`        // Override max memory usage
+    AutoOpenDashboard  bool   `json:"auto_open_dashboard"`  // Auto-open dashboard in browser on startup
 }
 
 // Existing functions remain the same...
@@ -68,12 +69,13 @@ func Load() (*Config, error) {
     if err != nil {
         if os.IsNotExist(err) {
             cfg := &Config{
-                DeviceID:        generateDeviceID(),
-                APIBase:         "https://idlenet-pilot-qi7t.vercel.app",
-                CreatedAt:       time.Now(),
-                UpdatedAt:       time.Now(),
-                ResourceMode:    "balanced",
-                AllowBackground: false,
+                DeviceID:          generateDeviceID(),
+                APIBase:           "https://idlenet-pilot-qi7t.vercel.app",
+                CreatedAt:         time.Now(),
+                UpdatedAt:         time.Now(),
+                ResourceMode:      "balanced",
+                AllowBackground:   false,
+                AutoOpenDashboard: true,
             }
             return cfg, nil
         }
@@ -119,14 +121,17 @@ func Save(cfg *Config) error {
     if err := os.WriteFile(tempPath, data, 0644); err != nil {
         return fmt.Errorf("failed to write config: %w", err)
     }
-    
+
+    // Atomic rename (on Windows, delete target first if rename fails)
     if err := os.Rename(tempPath, configPath); err != nil {
-        os.Remove(tempPath)
-        if err := os.WriteFile(configPath, data, 0644); err != nil {
+        // On Windows, remove target file and try again
+        os.Remove(configPath)
+        if err := os.Rename(tempPath, configPath); err != nil {
+            os.Remove(tempPath)
             return fmt.Errorf("failed to save config: %w", err)
         }
     }
-    
+
     return nil
 }
 

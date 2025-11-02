@@ -2,6 +2,7 @@ package dashboard
 
 import (
 "encoding/json"
+"fmt"
 "os"
 "path/filepath"
 "sync"
@@ -18,6 +19,7 @@ type History struct {
 mu     sync.Mutex
 Points []DataPoint `json:"points"`
 file   string
+dirty  bool // Track if save is needed
 }
 
 func NewHistory() *History {
@@ -34,14 +36,35 @@ return h
 
 func (h *History) load() {
 data, err := os.ReadFile(h.file)
-if err == nil {
-json.Unmarshal(data, &h.Points)
+if err != nil {
+if !os.IsNotExist(err) {
+fmt.Printf("Warning: failed to read history file: %v\n", err)
+}
+return
+}
+if err := json.Unmarshal(data, &h.Points); err != nil {
+fmt.Printf("Warning: corrupted history file, starting fresh: %v\n", err)
+h.Points = []DataPoint{}
 }
 }
 
 func (h *History) save() {
-data, _ := json.MarshalIndent(h.Points, "", "  ")
-os.WriteFile(h.file, data, 0644)
+// Ensure directory exists
+dir := filepath.Dir(h.file)
+if err := os.MkdirAll(dir, 0755); err != nil {
+fmt.Printf("Warning: failed to create history directory: %v\n", err)
+return
+}
+
+data, err := json.MarshalIndent(h.Points, "", "  ")
+if err != nil {
+fmt.Printf("Warning: failed to marshal history: %v\n", err)
+return
+}
+
+if err := os.WriteFile(h.file, data, 0644); err != nil {
+fmt.Printf("Warning: failed to write history file: %v\n", err)
+}
 }
 
 func (h *History) Add(earnings float64, jobs int) {
@@ -53,17 +76,38 @@ Time:     time.Now(),
 Earnings: earnings,
 Jobs:     jobs,
 })
+h.dirty = true
 
-// Keep only last 30 days
+// Clean old data only once per hour to reduce overhead
+if len(h.Points) > 0 && len(h.Points)%60 == 0 {
+h.cleanOldData()
+}
+}
+
+// cleanOldData removes data points older than 30 days (should be called with lock held)
+func (h *History) cleanOldData() {
 cutoff := time.Now().AddDate(0, 0, -30)
-var filtered []DataPoint
-for _, p := range h.Points {
-if p.Time.After(cutoff) {
-filtered = append(filtered, p)
+
+// In-place filtering for better performance
+n := 0
+for i := range h.Points {
+if h.Points[i].Time.After(cutoff) {
+h.Points[n] = h.Points[i]
+n++
 }
 }
-h.Points = filtered
+h.Points = h.Points[:n]
+}
+
+// Flush writes dirty data to disk (call periodically)
+func (h *History) Flush() {
+h.mu.Lock()
+defer h.mu.Unlock()
+
+if h.dirty {
 h.save()
+h.dirty = false
+}
 }
 
 func (h *History) GetRange(duration string) []DataPoint {

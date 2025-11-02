@@ -44,6 +44,24 @@ func (c *Client) SetBypassToken(token string) {
     c.bypass = token
 }
 
+// addBypassParams adds Vercel bypass parameters to a URL if bypass token is set
+func (c *Client) addBypassParams(fullURL string) (string, error) {
+    if c.bypass == "" {
+        return fullURL, nil
+    }
+
+    parsed, err := url.Parse(fullURL)
+    if err != nil {
+        return "", fmt.Errorf("invalid URL: %w", err)
+    }
+
+    query := parsed.Query()
+    query.Set("x-vercel-set-bypass-cookie", "true")
+    query.Set("x-vercel-protection-bypass", c.bypass)
+    parsed.RawQuery = query.Encode()
+    return parsed.String(), nil
+}
+
 // Register tells the server about this agent for the first time
 func (c *Client) Register(ctx context.Context, referral, version string) error {
     payload := map[string]interface{}{
@@ -92,19 +110,12 @@ func (c *Client) Beat(ctx context.Context) error {
 func (c *Client) doRequest(ctx context.Context, method, path string, payload interface{}) (*http.Response, error) {
     // Build the full URL
     fullURL := c.baseURL + path
-    
+
     // Add bypass parameters if we have a token
-    if c.bypass != "" {
-        parsed, err := url.Parse(fullURL)
-        if err != nil {
-            return nil, fmt.Errorf("invalid URL: %w", err)
-        }
-        
-        query := parsed.Query()
-        query.Set("x-vercel-set-bypass-cookie", "true")
-        query.Set("x-vercel-protection-bypass", c.bypass)
-        parsed.RawQuery = query.Encode()
-        fullURL = parsed.String()
+    var err error
+    fullURL, err = c.addBypassParams(fullURL)
+    if err != nil {
+        return nil, err
     }
     
     // Convert the payload to JSON
@@ -196,13 +207,18 @@ func (c *Client) DownloadArtifact(ctx context.Context, artifactURL, expectedSHA2
             return nil, fmt.Errorf("failed to decode base64: %w", err)
         }
     } else {
-        // Regular URL - download it
-        resp, err := http.Get(artifactURL)
+        // Regular URL - download it with context support
+        req, err := http.NewRequestWithContext(ctx, "GET", artifactURL, nil)
+        if err != nil {
+            return nil, fmt.Errorf("failed to create download request: %w", err)
+        }
+
+        resp, err := c.httpClient.Do(req)
         if err != nil {
             return nil, err
         }
         defer resp.Body.Close()
-        
+
         data, err = io.ReadAll(resp.Body)
         if err != nil {
             return nil, err
@@ -224,13 +240,12 @@ func (c *Client) DownloadArtifact(ctx context.Context, artifactURL, expectedSHA2
 // ReportJobComplete reports job completion
 func (c *Client) ReportJobComplete(ctx context.Context, jobID, status string, result map[string]interface{}, execTimeMs int64) error {
     body := map[string]interface{}{
-        "jobId": jobID,
-        "status": status,
-        "result": result,
+        "jobId":         jobID,
+        "status":        status,
+        "result":        result,
         "executionTime": execTimeMs,
     }
-    jsonBody, _ := json.Marshal(body)
-    resp, err := c.doRequest(ctx, "POST", "/api/jobs/complete", bytes.NewReader(jsonBody))
+    resp, err := c.doRequest(ctx, "POST", "/api/jobs/complete", body)
     if err != nil {
         return err
     }
@@ -264,13 +279,9 @@ func (c *Client) UploadJobResult(ctx context.Context, jobID, filePath string) er
 
     // Build URL with bypass token if available
     uploadURL := c.baseURL + "/api/jobs/upload-result"
-    if c.bypass != "" {
-        parsed, _ := url.Parse(uploadURL)
-        query := parsed.Query()
-        query.Set("x-vercel-set-bypass-cookie", "true")
-        query.Set("x-vercel-protection-bypass", c.bypass)
-        parsed.RawQuery = query.Encode()
-        uploadURL = parsed.String()
+    uploadURL, err = c.addBypassParams(uploadURL)
+    if err != nil {
+        return fmt.Errorf("failed to build upload URL: %w", err)
     }
 
     req, err := http.NewRequestWithContext(ctx, "POST", uploadURL, body)

@@ -6,7 +6,6 @@ import (
     "fmt"
     "os"
     "os/exec"
-    "path/filepath"
     "time"
 )
 
@@ -16,27 +15,37 @@ func ExecuteJob(ctx context.Context, jobType string, artifactData []byte, args j
     timeout := time.Duration(timeoutSec) * time.Second
     ctx, cancel := context.WithTimeout(ctx, timeout)
     defer cancel()
-    
+
     result := make(map[string]interface{})
-    
+
     switch jobType {
     case "javascript", "js", "compute", "user-upload":
         // For JavaScript, save to temp file and run with Node.js
-        tempFile := filepath.Join(os.TempDir(), fmt.Sprintf("job_%d.js", time.Now().Unix()))
-        if err := os.WriteFile(tempFile, artifactData, 0644); err != nil {
+        // Use os.CreateTemp to avoid name collisions
+        tmpFile, err := os.CreateTemp("", "job-*.js")
+        if err != nil {
+            return nil, fmt.Errorf("creating temp file: %w", err)
+        }
+        tempFile := tmpFile.Name()
+
+        if _, err := tmpFile.Write(artifactData); err != nil {
+            tmpFile.Close()
+            os.Remove(tempFile)
             return nil, fmt.Errorf("writing temp file: %w", err)
         }
+        tmpFile.Close()
         defer os.Remove(tempFile)
-        
-        // Execute with Node.js
-        cmd := exec.CommandContext(ctx, "node", tempFile)
+
+        // Execute with Node.js with memory limit (512MB default)
+        // This provides basic resource protection
+        cmd := exec.CommandContext(ctx, "node", "--max-old-space-size=512", tempFile)
         output, err := cmd.CombinedOutput()
         if err != nil {
             result["error"] = err.Error()
             result["output"] = string(output)
             return result, err
         }
-        
+
         result["output"] = string(output)
         result["success"] = true
         
